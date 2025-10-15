@@ -241,6 +241,26 @@ class SDFG_PT_CreateTabs(bpy.types.Panel):
                 box.label(text="STEPper addon not installed/enabled")
                 box.operator("wm.open_external_link", text="Get STEPper Addon", icon="LIBRARY_DATA_DIRECT")
 
+<<<<<<< HEAD
+            # Material Automation Section - NEW!
+            box.label(text="Material Automation (Step 1)")
+            mat_box = layout.box()
+            col = mat_box.column(align=True)
+            col.operator("sdfg.assign_default_material", text="Assign Default Materials", icon="MATERIAL")
+            col.operator("sdfg.analyze_materials", text="Analyze Materials", icon="VIEWZOOM")
+
+            # Show analysis results if available
+            if len(context.window_manager.sdfg_material_groups) > 0:
+                info_box = mat_box.box()
+                info_box.alert = True
+                info_box.label(text=f"Found {len(context.window_manager.sdfg_material_groups)} duplicate group(s)!", icon="ERROR")
+                col = mat_box.column(align=True)
+                col.operator("sdfg.consolidate_materials", text="Consolidate Duplicates", icon="AUTOMERGE_ON")
+
+            col = mat_box.column(align=True)
+            col.operator("sdfg.remove_unused_materials", text="Remove Unused Materials", icon="TRASH")
+            col.operator("sdfg.show_material_report", text="Show Material Report", icon="INFO")
+=======
             # CAD Simplification Section
             box.label(text="CAD Simplification")
             # Main auto-simplify button with icon
@@ -264,6 +284,7 @@ class SDFG_PT_CreateTabs(bpy.types.Panel):
                 step_box.operator("scene.simplify_cad_step", text="5. Recalculate Normals").step_type = 'RECALC_NORMALS'
                 step_box.operator("scene.simplify_cad_step", text="6. Delete Loose Geometry").step_type = 'DELETE_LOOSE'
                 step_box.operator("scene.simplify_cad_step", text="7. Fill Holes").step_type = 'FILL_HOLES'
+>>>>>>> b4e5ff0 (step 1: assign and consolidate materials)
 
             # Mesh tools
             box.label(text="Mesh tools")
