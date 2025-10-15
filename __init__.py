@@ -1,10 +1,10 @@
 bl_info = {
-    "name": "SDF Gen",
-    "author": "Cole Biesemeyer",
+    "name": "Capstone",
+    "author": "Sree-Arjun",
     "version": (1, 0, 0),
     "blender": (4, 3, 0),
-    "location": "3D Viewport > Sidebar > SDF Gen",
-    "description": "Creates SDF files from Blender scenes",
+    "location": "3D Viewport > Sidebar > Capstone",
+    "description": "Creates SDF files from Blender scenes with automated CAD simplification",
     "category": "View3D",
 }
 

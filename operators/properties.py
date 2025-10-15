@@ -151,6 +151,13 @@ bpy.types.Scene.joints_expand = bpy.props.BoolProperty(default=True)
 
 bpy.types.Scene.utilities_advanced = bpy.props.BoolProperty(default=False)
 
+# Property to control the CAD simplification advanced step-by-step visibility
+bpy.types.Scene.cad_simplify_advanced = bpy.props.BoolProperty(
+    name="CAD Simplify Advanced",
+    description="Show advanced step-by-step CAD simplification options",
+    default=False
+)
+
 bpy.types.Scene.export_config = bpy.props.BoolProperty(default=True)
 
 bpy.types.Scene.author_name = bpy.props.StringProperty(

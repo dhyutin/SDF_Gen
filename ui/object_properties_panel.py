@@ -7,7 +7,7 @@ class SDFG_PT_LinkPropertiesPanel(bpy.types.Panel):
     bl_idname = "SDFG_PT_LinkPropertiesPanel"
     bl_space_type = "VIEW_3D"
     bl_region_type = "UI"
-    bl_category = "SDF_Gen"
+    bl_category = "Capstone"
 
     @classmethod
     def poll(cls, context):
@@ -33,7 +33,7 @@ class SDFG_PT_VisualPropertiesPanel(bpy.types.Panel):
     bl_idname = "SDFG_PT_VisualPropertiesPanel"
     bl_space_type = "VIEW_3D"
     bl_region_type = "UI"
-    bl_category = "SDF_Gen"
+    bl_category = "Capstone"
 
     @classmethod
     def poll(cls, context):
@@ -91,7 +91,7 @@ class SDFG_PT_JointPropertiesPanel(bpy.types.Panel):
     bl_idname = "SDFG_PT_JointPropertiesPanel"
     bl_space_type = "VIEW_3D"
     bl_region_type = "UI"
-    bl_category = "SDF_Gen"
+    bl_category = "Capstone"
 
     @classmethod
     def poll(cls, context):
@@ -150,7 +150,7 @@ class SDFG_PT_LightPropertiesPanel(bpy.types.Panel):
     bl_idname = "SDFG_PT_LightPropertiesPanel"
     bl_space_type = "VIEW_3D"
     bl_region_type = "UI"
-    bl_category = "SDF_Gen"
+    bl_category = "Capstone"
 
     @classmethod
     def poll(cls, context):

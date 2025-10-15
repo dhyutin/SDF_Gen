@@ -1,0 +1,82 @@
+<?xml version="1.0" ?>
+<sdf version="1.6">
+  <model name="vise">
+    <link name="base_link">
+      <visual name="base">
+        <geometry>
+          <mesh>
+            <uri>base.glb</uri>
+          </mesh>
+        </geometry>
+      </visual>
+      <collision name="base">
+        <geometry>
+          <mesh>
+            <uri>base.glb</uri>
+          </mesh>
+        </geometry>
+      </collision>
+    </link>
+    <link name="finger_1_link">
+      <visual name="finger_1">
+        <geometry>
+          <mesh>
+            <uri>finger_1.glb</uri>
+          </mesh>
+        </geometry>
+      </visual>
+      <collision name="finger_1">
+        <geometry>
+          <mesh>
+            <uri>finger_1.glb</uri>
+          </mesh>
+        </geometry>
+      </collision>
+    </link>
+    <link name="finger_2_link">
+      <visual name="finger_2">
+        <geometry>
+          <mesh>
+            <uri>finger_2.glb</uri>
+          </mesh>
+        </geometry>
+      </visual>
+      <collision name="finger_2">
+        <geometry>
+          <mesh>
+            <uri>finger_2.glb</uri>
+          </mesh>
+        </geometry>
+      </collision>
+    </link>
+    <joint name="finger_2_joint_prismatic" type="prismatic">
+      <pose>0 0 0 0 0 0</pose>
+      <parent>base_link</parent>
+      <child>finger_2_link</child>
+      <axis>
+        <xyz>0 0 -1</xyz>
+        <limit>
+          <lower>0</lower>
+          <upper>0.07</upper>
+        </limit>
+      </axis>
+    </joint>
+    <joint name="finger_1_joint_prismatic" type="prismatic">
+      <pose>0 0 0 0 0 0</pose>
+      <parent>base_link</parent>
+      <child>finger_1_link</child>
+      <axis>
+        <xyz>0 0 1</xyz>
+        <limit>
+          <lower>0</lower>
+          <upper>0.07</upper>
+        </limit>
+      </axis>
+    </joint>
+    <frame name="tool_frame"
+           attached_to="base_link"
+           intrinsic:create_entity="true">
+        <pose>0 0.13 0 -1.57079632679 0 0</pose>
+    </frame>
+  </model>
+</sdf>

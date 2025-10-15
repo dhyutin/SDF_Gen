@@ -16,7 +16,7 @@ class SDFG_PT_CreateTabs(bpy.types.Panel):
     bl_idname = "SDFG_PT_CreatePanel"
     bl_space_type = "VIEW_3D"
     bl_region_type = "UI"
-    bl_category = "SDF_Gen"
+    bl_category = "Capstone"
 
     
 
@@ -240,6 +240,30 @@ class SDFG_PT_CreateTabs(bpy.types.Panel):
             else:
                 box.label(text="STEPper addon not installed/enabled")
                 box.operator("wm.open_external_link", text="Get STEPper Addon", icon="LIBRARY_DATA_DIRECT")
+
+            # CAD Simplification Section
+            box.label(text="CAD Simplification")
+            # Main auto-simplify button with icon
+            box.operator("scene.simplify_cad_auto", text="Auto-Simplify CAD Model", icon='MOD_BUILD')
+
+            # Expandable advanced options
+            row = box.row()
+            row.prop(context.scene, "cad_simplify_advanced",
+                    icon="TRIA_DOWN" if context.scene.cad_simplify_advanced else "TRIA_RIGHT",
+                    icon_only=True, emboss=False)
+            row.label(text="Advanced Step-by-Step")
+
+            # Show individual step buttons when expanded
+            if context.scene.cad_simplify_advanced:
+                step_box = box.box()
+                step_box.label(text="Individual Steps:")
+                step_box.operator("scene.simplify_cad_step", text="1. Delete Unnecessary Objects").step_type = 'DELETE_OBJECTS'
+                step_box.operator("scene.simplify_cad_step", text="2. Join All Meshes").step_type = 'JOIN_MESHES'
+                step_box.operator("scene.simplify_cad_step", text="3. Apply Transforms").step_type = 'APPLY_TRANSFORMS'
+                step_box.operator("scene.simplify_cad_step", text="4. Remove Doubles").step_type = 'REMOVE_DOUBLES'
+                step_box.operator("scene.simplify_cad_step", text="5. Recalculate Normals").step_type = 'RECALC_NORMALS'
+                step_box.operator("scene.simplify_cad_step", text="6. Delete Loose Geometry").step_type = 'DELETE_LOOSE'
+                step_box.operator("scene.simplify_cad_step", text="7. Fill Holes").step_type = 'FILL_HOLES'
 
             # Mesh tools
             box.label(text="Mesh tools")

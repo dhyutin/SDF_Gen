@@ -1,0 +1,527 @@
+"""
+CAD Model Simplification Automation
+This module provides automated functions to simplify CAD models imported into Blender.
+It automates the manual steps typically required before material assignment.
+
+Author: Sree-Arjun
+Description: Simplifies CAD models by cleaning up geometry, joining meshes, and preparing for export
+"""
+
+import bpy
+import bmesh
+from mathutils import Vector
+
+
+# ============================================================================
+# HELPER FUNCTIONS (Standalone functions that can be called independently)
+# ============================================================================
+
+def delete_unnecessary_objects(delete_cameras=True, delete_lights=True, delete_empties=True):
+    """
+    Delete cameras, lights, and empty objects from the scene.
+
+    Args:
+        delete_cameras: Whether to delete camera objects (default: True)
+        delete_lights: Whether to delete light objects (default: True)
+        delete_empties: Whether to delete empty objects (default: True)
+
+    Returns:
+        int: Number of objects deleted
+    """
+    objects_to_delete = []
+
+    for obj in bpy.data.objects:
+        # Delete cameras if enabled
+        if delete_cameras and obj.type == 'CAMERA':
+            objects_to_delete.append(obj)
+
+        # Delete lights if enabled
+        elif delete_lights and obj.type == 'LIGHT':
+            objects_to_delete.append(obj)
+
+        # Delete empties if enabled
+        elif delete_empties and obj.type == 'EMPTY':
+            objects_to_delete.append(obj)
+
+    # Batch delete objects
+    for obj in objects_to_delete:
+        bpy.data.objects.remove(obj, do_unlink=True)
+
+    return len(objects_to_delete)
+
+
+def get_all_mesh_objects():
+    """
+    Get all mesh objects in the scene.
+
+    Returns:
+        list: List of all mesh objects
+    """
+    return [obj for obj in bpy.data.objects if obj.type == 'MESH']
+
+
+def join_all_meshes(mesh_objects):
+    """
+    Join all mesh objects into a single mesh.
+
+    Args:
+        mesh_objects: List of mesh objects to join
+
+    Returns:
+        bpy.types.Object: The joined mesh object, or None if failed
+    """
+    if len(mesh_objects) == 0:
+        return None
+
+    # Deselect all objects first
+    bpy.ops.object.select_all(action='DESELECT')
+
+    # Select all mesh objects
+    for obj in mesh_objects:
+        obj.select_set(True)
+
+    # Set the first mesh as active
+    bpy.context.view_layer.objects.active = mesh_objects[0]
+
+    # Ensure we're in object mode
+    if bpy.context.mode != 'OBJECT':
+        bpy.ops.object.mode_set(mode='OBJECT')
+
+    # Join all selected meshes
+    bpy.ops.object.join()
+
+    # Return the active (joined) object
+    return bpy.context.active_object
+
+
+def apply_all_transforms(obj):
+    """
+    Apply all transforms (location, rotation, scale) to the object.
+
+    Args:
+        obj: The object to apply transforms to
+    """
+    # Make sure the object is selected and active
+    bpy.ops.object.select_all(action='DESELECT')
+    obj.select_set(True)
+    bpy.context.view_layer.objects.active = obj
+
+    # Ensure we're in object mode
+    if bpy.context.mode != 'OBJECT':
+        bpy.ops.object.mode_set(mode='OBJECT')
+
+    # Apply all transforms
+    bpy.ops.object.transform_apply(location=True, rotation=True, scale=True)
+
+
+def remove_duplicate_vertices(obj, merge_distance_mm):
+    """
+    Remove duplicate vertices by merging vertices within a threshold distance.
+
+    Args:
+        obj: The mesh object to clean
+        merge_distance_mm: Merge distance in millimeters
+
+    Returns:
+        int: Number of vertices removed
+    """
+    # Convert millimeters to meters (Blender's default unit)
+    merge_distance_m = merge_distance_mm / 1000.0
+
+    # Ensure object is selected and active
+    bpy.ops.object.select_all(action='DESELECT')
+    obj.select_set(True)
+    bpy.context.view_layer.objects.active = obj
+
+    # Get vertex count before merging
+    vertex_count_before = len(obj.data.vertices)
+
+    # Switch to edit mode
+    bpy.ops.object.mode_set(mode='EDIT')
+
+    # Select all vertices
+    bpy.ops.mesh.select_all(action='SELECT')
+
+    # Remove doubles (merge by distance)
+    bpy.ops.mesh.remove_doubles(threshold=merge_distance_m)
+
+    # Switch back to object mode
+    bpy.ops.object.mode_set(mode='OBJECT')
+
+    # Get vertex count after merging
+    vertex_count_after = len(obj.data.vertices)
+
+    # Calculate how many vertices were removed
+    removed = vertex_count_before - vertex_count_after
+
+    return removed
+
+
+def recalculate_mesh_normals(obj):
+    """
+    Recalculate mesh normals to face outward (outside).
+
+    Args:
+        obj: The mesh object to recalculate normals for
+    """
+    # Ensure object is selected and active
+    bpy.ops.object.select_all(action='DESELECT')
+    obj.select_set(True)
+    bpy.context.view_layer.objects.active = obj
+
+    # Switch to edit mode
+    bpy.ops.object.mode_set(mode='EDIT')
+
+    # Select all
+    bpy.ops.mesh.select_all(action='SELECT')
+
+    # Recalculate normals outside
+    bpy.ops.mesh.normals_make_consistent(inside=False)
+
+    # Switch back to object mode
+    bpy.ops.object.mode_set(mode='OBJECT')
+
+
+def delete_loose_geometry(obj):
+    """
+    Delete loose vertices and edges that are not connected to any faces.
+
+    Args:
+        obj: The mesh object to clean
+
+    Returns:
+        int: Number of loose elements deleted
+    """
+    # Ensure object is selected and active
+    bpy.ops.object.select_all(action='DESELECT')
+    obj.select_set(True)
+    bpy.context.view_layer.objects.active = obj
+
+    # Switch to edit mode
+    bpy.ops.object.mode_set(mode='EDIT')
+
+    # Deselect all first
+    bpy.ops.mesh.select_all(action='DESELECT')
+
+    # Get the mesh data using BMesh
+    mesh = obj.data
+    bm = bmesh.from_edit_mesh(mesh)
+
+    # Count loose elements before deletion
+    loose_count = 0
+
+    # Select loose vertices (vertices not connected to any edge)
+    bpy.ops.mesh.select_loose()
+
+    # Count selected vertices/edges
+    loose_count = sum(1 for v in bm.verts if v.select)
+    loose_count += sum(1 for e in bm.edges if e.select)
+
+    # Delete selected loose geometry
+    if loose_count > 0:
+        bpy.ops.mesh.delete(type='VERT')
+
+    # Update the mesh
+    bmesh.update_edit_mesh(mesh)
+
+    # Free the bmesh
+    bm.free()
+
+    # Switch back to object mode
+    bpy.ops.object.mode_set(mode='OBJECT')
+
+    return loose_count
+
+
+def fill_mesh_holes(obj):
+    """
+    Fill holes in the mesh by detecting boundary edges and filling them.
+
+    Args:
+        obj: The mesh object to fill holes in
+
+    Returns:
+        int: Number of holes filled
+    """
+    # Ensure object is selected and active
+    bpy.ops.object.select_all(action='DESELECT')
+    obj.select_set(True)
+    bpy.context.view_layer.objects.active = obj
+
+    # Switch to edit mode
+    bpy.ops.object.mode_set(mode='EDIT')
+
+    # Deselect all
+    bpy.ops.mesh.select_all(action='DESELECT')
+
+    # Get BMesh data
+    mesh = obj.data
+    bm = bmesh.from_edit_mesh(mesh)
+
+    # Find boundary edges (edges that are part of holes)
+    boundary_edges = [e for e in bm.edges if e.is_boundary]
+
+    if len(boundary_edges) == 0:
+        # No holes to fill
+        bmesh.update_edit_mesh(mesh)
+        bm.free()
+        bpy.ops.object.mode_set(mode='OBJECT')
+        return 0
+
+    # Select all boundary edges
+    for edge in boundary_edges:
+        edge.select = True
+
+    # Update the mesh to reflect selection
+    bmesh.update_edit_mesh(mesh)
+
+    # Fill holes using edge fill
+    # This will create faces to close the holes
+    holes_filled = 0
+    try:
+        # Fill selected edges
+        bpy.ops.mesh.edge_face_add()
+        holes_filled = len(boundary_edges)
+    except:
+        # If edge_face_add fails, try using fill
+        try:
+            bpy.ops.mesh.fill()
+            holes_filled = len(boundary_edges)
+        except:
+            # If both methods fail, just continue
+            pass
+
+    # Update the mesh
+    bmesh.update_edit_mesh(mesh)
+
+    # Free the bmesh
+    bm.free()
+
+    # Switch back to object mode
+    bpy.ops.object.mode_set(mode='OBJECT')
+
+    return holes_filled
+
+
+# ============================================================================
+# OPERATORS
+# ============================================================================
+
+class SDFG_OT_SimplifyCAD(bpy.types.Operator):
+    """
+    Automatically simplify CAD model up to Step 1 (before material assignment).
+
+    This operator performs the following operations:
+    1. Delete unnecessary objects (cameras, lights)
+    2. Join all mesh objects into one
+    3. Apply all transforms
+    4. Remove duplicate vertices (merge by distance)
+    5. Recalculate normals (outside)
+    6. Delete loose geometry
+    7. Fill holes in the mesh
+    8. Clean up the mesh
+    """
+
+    bl_idname = "scene.simplify_cad_auto"
+    bl_label = "Auto-Simplify CAD Model"
+    bl_options = {"REGISTER", "UNDO"}
+
+    # Operator properties with default values
+    merge_distance: bpy.props.FloatProperty(
+        name="Merge Distance",
+        description="Distance threshold for merging vertices (in millimeters)",
+        default=0.01,
+        min=0.001,
+        max=1.0,
+        precision=3,
+        unit='LENGTH'
+    ) # type: ignore
+
+    delete_cameras: bpy.props.BoolProperty(
+        name="Delete Cameras",
+        description="Delete all camera objects from the scene",
+        default=True
+    ) # type: ignore
+
+    delete_lights: bpy.props.BoolProperty(
+        name="Delete Lights",
+        description="Delete all light objects from the scene",
+        default=True
+    ) # type: ignore
+
+    delete_empties: bpy.props.BoolProperty(
+        name="Delete Empty Objects",
+        description="Delete all empty objects from the scene",
+        default=True
+    ) # type: ignore
+
+    fill_holes: bpy.props.BoolProperty(
+        name="Fill Holes",
+        description="Automatically fill holes in the mesh",
+        default=True
+    ) # type: ignore
+
+    recalculate_normals: bpy.props.BoolProperty(
+        name="Recalculate Normals",
+        description="Recalculate normals to face outward",
+        default=True
+    ) # type: ignore
+
+    def execute(self, context):
+        """Main execution function that runs all simplification steps"""
+
+        # Step 1: Delete unnecessary objects
+        self.report({'INFO'}, "Step 1/8: Deleting unnecessary objects...")
+        delete_unnecessary_objects(self.delete_cameras, self.delete_lights, self.delete_empties)
+
+        # Step 2: Select all mesh objects
+        self.report({'INFO'}, "Step 2/8: Selecting all mesh objects...")
+        mesh_objects = get_all_mesh_objects()
+
+        if len(mesh_objects) == 0:
+            self.report({'ERROR'}, "No mesh objects found in the scene!")
+            return {'CANCELLED'}
+
+        # Step 3: Join all meshes into one object
+        self.report({'INFO'}, "Step 3/8: Joining all meshes...")
+        joined_object = join_all_meshes(mesh_objects)
+
+        if joined_object is None:
+            self.report({'ERROR'}, "Failed to join meshes!")
+            return {'CANCELLED'}
+
+        # Step 4: Apply all transforms
+        self.report({'INFO'}, "Step 4/8: Applying all transforms...")
+        apply_all_transforms(joined_object)
+
+        # Step 5: Remove duplicate vertices
+        self.report({'INFO'}, "Step 5/8: Removing duplicate vertices...")
+        removed_verts = remove_duplicate_vertices(joined_object, self.merge_distance)
+        self.report({'INFO'}, f"Removed {removed_verts} duplicate vertices")
+
+        # Step 6: Recalculate normals
+        if self.recalculate_normals:
+            self.report({'INFO'}, "Step 6/8: Recalculating normals...")
+            recalculate_mesh_normals(joined_object)
+
+        # Step 7: Delete loose geometry
+        self.report({'INFO'}, "Step 7/8: Deleting loose geometry...")
+        deleted_loose = delete_loose_geometry(joined_object)
+        self.report({'INFO'}, f"Deleted {deleted_loose} loose vertices/edges")
+
+        # Step 8: Fill holes
+        if self.fill_holes:
+            self.report({'INFO'}, "Step 8/8: Filling holes...")
+            filled_holes = fill_mesh_holes(joined_object)
+            self.report({'INFO'}, f"Filled {filled_holes} holes")
+
+        # Final cleanup: Ensure we're in object mode
+        if bpy.context.mode != 'OBJECT':
+            bpy.ops.object.mode_set(mode='OBJECT')
+
+        # Select the final object
+        bpy.ops.object.select_all(action='DESELECT')
+        joined_object.select_set(True)
+        bpy.context.view_layer.objects.active = joined_object
+
+        self.report({'INFO'}, "CAD simplification complete! Ready for material assignment.")
+        return {'FINISHED'}
+
+
+class SDFG_OT_SimplifyCAD_Advanced(bpy.types.Operator):
+    """
+    Advanced CAD Simplification with step-by-step control.
+    Allows users to run individual simplification steps.
+    """
+
+    bl_idname = "scene.simplify_cad_step"
+    bl_label = "CAD Simplification Step"
+    bl_options = {"REGISTER", "UNDO"}
+
+    # Enum property to select which step to run
+    step_type: bpy.props.EnumProperty(
+        name="Simplification Step",
+        description="Choose which simplification step to run",
+        items=[
+            ('DELETE_OBJECTS', "Delete Unnecessary Objects", "Delete cameras, lights, and empties"),
+            ('JOIN_MESHES', "Join All Meshes", "Join all mesh objects into one"),
+            ('APPLY_TRANSFORMS', "Apply Transforms", "Apply location, rotation, and scale"),
+            ('REMOVE_DOUBLES', "Remove Doubles", "Merge duplicate vertices"),
+            ('RECALC_NORMALS', "Recalculate Normals", "Fix normal directions"),
+            ('DELETE_LOOSE', "Delete Loose Geometry", "Remove unconnected vertices/edges"),
+            ('FILL_HOLES', "Fill Holes", "Fill holes in the mesh"),
+        ],
+    ) # type: ignore
+
+    def execute(self, context):
+        """Execute the selected simplification step"""
+
+        if self.step_type == 'DELETE_OBJECTS':
+            # Delete unnecessary objects
+            deleted = delete_unnecessary_objects()
+            self.report({'INFO'}, f"Deleted {deleted} unnecessary objects")
+
+        elif self.step_type == 'JOIN_MESHES':
+            # Join all meshes
+            mesh_objects = get_all_mesh_objects()
+            if len(mesh_objects) == 0:
+                self.report({'ERROR'}, "No mesh objects to join!")
+                return {'CANCELLED'}
+            joined = join_all_meshes(mesh_objects)
+            if joined:
+                self.report({'INFO'}, f"Joined {len(mesh_objects)} meshes into one")
+            else:
+                self.report({'ERROR'}, "Failed to join meshes!")
+                return {'CANCELLED'}
+
+        elif self.step_type == 'APPLY_TRANSFORMS':
+            # Apply transforms to active object
+            obj = context.active_object
+            if obj and obj.type == 'MESH':
+                apply_all_transforms(obj)
+                self.report({'INFO'}, "Applied all transforms")
+            else:
+                self.report({'ERROR'}, "No mesh object selected!")
+                return {'CANCELLED'}
+
+        elif self.step_type == 'REMOVE_DOUBLES':
+            # Remove duplicate vertices
+            obj = context.active_object
+            if obj and obj.type == 'MESH':
+                removed = remove_duplicate_vertices(obj, 0.01)
+                self.report({'INFO'}, f"Removed {removed} duplicate vertices")
+            else:
+                self.report({'ERROR'}, "No mesh object selected!")
+                return {'CANCELLED'}
+
+        elif self.step_type == 'RECALC_NORMALS':
+            # Recalculate normals
+            obj = context.active_object
+            if obj and obj.type == 'MESH':
+                recalculate_mesh_normals(obj)
+                self.report({'INFO'}, "Recalculated normals")
+            else:
+                self.report({'ERROR'}, "No mesh object selected!")
+                return {'CANCELLED'}
+
+        elif self.step_type == 'DELETE_LOOSE':
+            # Delete loose geometry
+            obj = context.active_object
+            if obj and obj.type == 'MESH':
+                deleted = delete_loose_geometry(obj)
+                self.report({'INFO'}, f"Deleted {deleted} loose elements")
+            else:
+                self.report({'ERROR'}, "No mesh object selected!")
+                return {'CANCELLED'}
+
+        elif self.step_type == 'FILL_HOLES':
+            # Fill holes
+            obj = context.active_object
+            if obj and obj.type == 'MESH':
+                filled = fill_mesh_holes(obj)
+                self.report({'INFO'}, f"Filled {filled} holes")
+            else:
+                self.report({'ERROR'}, "No mesh object selected!")
+                return {'CANCELLED'}
+
+        return {'FINISHED'}
