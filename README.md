@@ -1,12 +1,12 @@
-# SDF_Gen Guide [WIP]
+# SDF_Gen_updated_collider Guide [WIP]
 
 ## Workspaces
-SDF_Gen is organized into **“workspaces”**. Each space is focused on a specific step in the SDF creation process. Accessing each workspace is done through a row of tabs at the top of the addon UI.
+SDF_Gen_updated_collider is organized into **"workspaces"**. Each space is focused on a specific step in the SDF creation process. Accessing each workspace is done through a row of tabs at the top of the addon UI.
 
 ---
 
 ## Utilities
-The `Utilities` tab is for processing imported meshes to make them suitable for working with in SDF Gen.
+The `Utilities` tab is for processing imported meshes to make them suitable for working with in SDF_Gen_updated_collider.
 
 ### Clean Mesh
 `Clean Mesh` attempts to repair any parts of the mesh that may have issues, such as incorrect scale transforms. It also removes any hierarchy or parenting which can cause issues with collision generation.

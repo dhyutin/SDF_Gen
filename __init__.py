@@ -1,9 +1,9 @@
 bl_info = {
-    "name": "SDF Gen",
+    "name": "SDF_Gen_updated_collider",
     "author": "Cole Biesemeyer",
     "version": (1, 0, 0),
     "blender": (4, 3, 0),
-    "location": "3D Viewport > Sidebar > SDF Gen",
+    "location": "3D Viewport > Sidebar > SDF_Gen_updated_collider",
     "description": "Creates SDF files from Blender scenes",
     "category": "View3D",
 }
@@ -23,7 +23,8 @@ auto_load.init()
 from .operators.create import update_scene
 from .ui.object_properties_panel import LinkCollectionProperties
 from .operators.joints import JointBoneProperties
-    
+from .operators.auto_colliders import MagicColliderResult
+
 
 def register():
     auto_load.register()
@@ -36,6 +37,7 @@ def register():
 
     bpy.types.Collection.link_grp = bpy.props.PointerProperty(type=LinkCollectionProperties)
     bpy.types.PoseBone.joint_grp = bpy.props.PointerProperty(type=JointBoneProperties)
+    bpy.types.Scene.magic_collider_results = bpy.props.CollectionProperty(type=MagicColliderResult)
     # bpy.types.Scene.utilties_advanced = bpy.props.BoolProperty(name="Utilities Advanced", default=False)
 
 
@@ -46,6 +48,7 @@ def unregister():
     del bpy.types.WindowManager.my_list_index
     del bpy.types.PoseBone.joint_grp
     del bpy.types.Collection.link_grp
+    del bpy.types.Scene.magic_collider_results
     # del bpy.types.Scene.utilties_advanced
 
 
