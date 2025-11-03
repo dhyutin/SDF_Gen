@@ -342,3 +342,16 @@ bpy.types.PoseBone.pose_bone_location = FloatVectorProperty(
     unit='LENGTH',
     update=update_pose_bone_location
 )
+
+# Azure OpenAI connection properties
+bpy.types.Scene.azure_connection_status = bpy.props.StringProperty(
+    name="Azure Connection Status",
+    description="Status message from Azure OpenAI connection test",
+    default="Not tested"
+)
+
+bpy.types.Scene.azure_connection_success = bpy.props.BoolProperty(
+    name="Azure Connection Success",
+    description="Whether the Azure OpenAI connection was successful",
+    default=False
+)

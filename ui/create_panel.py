@@ -232,6 +232,19 @@ class SDFG_PT_CreateTabs(bpy.types.Panel):
             box.operator("object.create_light", text="Directional Light").light_type = 'DIRECTIONAL'
 
         elif scene.tab_option == "UTILITIES":
+            # Azure OpenAI Connection
+            box.label(text="Azure OpenAI")
+            box.operator("scene.test_azure_connection", text="Test Connection")
+
+            # Display connection status with appropriate icon
+            status_row = box.row()
+            if context.scene.azure_connection_success:
+                status_row.label(text=context.scene.azure_connection_status, icon='CHECKMARK')
+            else:
+                status_row.label(text=context.scene.azure_connection_status, icon='ERROR')
+
+            box.label(text="")  # Spacer
+
             # Import
             box.label(text="Import")
             is_stepper_enabled = addon_utils.check("STEPper")[1]
