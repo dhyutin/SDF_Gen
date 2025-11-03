@@ -54,6 +54,14 @@ class SDFG_PT_CreateTabs(bpy.types.Panel):
             row.operator("scene.create_link_items", text="Visual")
             row.operator("scene.create_link_items", text="Collision")
 
+            # AI-powered link generation
+            col.separator()
+            col.operator("scene.auto_generate_links", text="Auto-Link (AI)", icon="AUTO")
+
+            # View log button
+            if "Auto-Link Log" in bpy.data.texts:
+                col.operator("scene.view_autolink_log", text="View Log", icon="TEXT")
+
             row = layout.row()
 
             row.prop(context.scene, "links_expand", 
