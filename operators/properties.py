@@ -355,3 +355,24 @@ bpy.types.Scene.azure_connection_success = bpy.props.BoolProperty(
     description="Whether the Azure OpenAI connection was successful",
     default=False
 )
+
+# Auto-Link statistics
+bpy.types.Scene.autolink_time_taken = bpy.props.FloatProperty(
+    name="Auto-Link Time",
+    description="Time taken for last auto-link generation in seconds",
+    default=0.0,
+    min=0.0
+)
+
+bpy.types.Scene.autolink_tokens_used = bpy.props.IntProperty(
+    name="Auto-Link Tokens",
+    description="Total tokens used in last auto-link generation",
+    default=0,
+    min=0
+)
+
+bpy.types.Scene.autolink_stats_available = bpy.props.BoolProperty(
+    name="Auto-Link Stats Available",
+    description="Whether auto-link statistics are available to display",
+    default=False
+)

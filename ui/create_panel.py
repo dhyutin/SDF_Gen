@@ -57,10 +57,25 @@ class SDFG_PT_CreateTabs(bpy.types.Panel):
             # AI-powered link generation
             col.separator()
             col.operator("scene.auto_generate_links", text="Auto-Link (AI)", icon="AUTO")
+            col.operator("scene.validate_links_only", text="Validate Links", icon="CHECKMARK")
 
-            # View log button
+            # Statistics display
+            if context.scene.autolink_stats_available:
+                col.separator()
+                stats_box = col.box()
+                stats_box.label(text="Last Auto-Link Stats:", icon="INFO")
+                time_mins = context.scene.autolink_time_taken / 60
+                if time_mins >= 1:
+                    stats_box.label(text=f"  Time: {time_mins:.2f} min")
+                else:
+                    stats_box.label(text=f"  Time: {context.scene.autolink_time_taken:.2f} sec")
+                stats_box.label(text=f"  Tokens: {context.scene.autolink_tokens_used:,}")
+
+            # View log buttons
             if "Auto-Link Log" in bpy.data.texts:
-                col.operator("scene.view_autolink_log", text="View Log", icon="TEXT")
+                col.operator("scene.view_autolink_log", text="View Auto-Link Log", icon="TEXT")
+            if "Link Validation Log" in bpy.data.texts:
+                col.operator("scene.view_validation_log", text="View Validation Log", icon="TEXT")
 
             row = layout.row()
 

@@ -100,12 +100,139 @@ class BlenderTextLogger:
 logger = None
 
 
-def capture_viewport_images(num_angles=4):
+def update_viewport_to_camera():
     """
-    Capture viewport images from multiple angles around the scene using safe camera-based rendering.
+    Update the 3D viewport to show the current camera view.
+    This provides visual feedback to the user about what angle is being captured.
+    """
+    import time
+
+    try:
+        # Find the 3D viewport area
+        for window in bpy.context.window_manager.windows:
+            for area in window.screen.areas:
+                if area.type == 'VIEW_3D':
+                    # Set to camera view
+                    for space in area.spaces:
+                        if space.type == 'VIEW_3D':
+                            space.region_3d.view_perspective = 'CAMERA'
+
+                    # Force viewport update/redraw
+                    area.tag_redraw()
+
+                    # Process events to show the update immediately
+                    bpy.ops.wm.redraw_timer(type='DRAW_WIN_SWAP', iterations=1)
+
+                    # Brief pause so user can see the angle (0.3 seconds)
+                    time.sleep(0.3)
+                    return
+    except Exception as e:
+        # Non-critical - if viewport update fails, continue anyway
+        pass
+
+
+def get_optimal_viewing_angles(initial_image_path, scene_bounds):
+    """
+    Use AI to determine optimal viewing angles based on initial image.
 
     Args:
-        num_angles (int): Number of different angles to capture (2-5 recommended)
+        initial_image_path (str): Path to first captured image
+        scene_bounds (dict): Scene bounding box info
+
+    Returns:
+        list: List of angle specifications (azimuth, elevation)
+    """
+    global logger
+    import base64
+    import os
+
+    try:
+        if logger:
+            logger.info("Analyzing initial image to determine optimal viewing angles...")
+
+        client = get_azure_client()
+        deployment = get_deployment_name()
+
+        if not client or not deployment:
+            # Fallback to default angles
+            return [(90, 0), (180, 0), (270, 30)]
+
+        # Encode initial image
+        with open(initial_image_path, "rb") as img_file:
+            encoded_image = base64.b64encode(img_file.read()).decode('utf-8')
+
+        angle_prompt = """You are an expert in 3D visualization and mechanical analysis.
+
+I've captured an initial view of a 3D mechanical model. Based on this image, determine the BEST additional camera angles to fully understand the mechanism's structure.
+
+INITIAL VIEW: Front view (0° azimuth, 0° elevation)
+
+TASK: Suggest 3-4 additional viewing angles that would provide the most information about:
+1. Hidden joint connections
+2. Rear/back components
+3. Underside or top structures
+4. Symmetric elements (left/right)
+5. Complex geometric features
+
+Respond with JSON containing angle suggestions:
+{
+  "suggested_angles": [
+    {"azimuth": 90, "elevation": 0, "reason": "view right side and side joints"},
+    {"azimuth": 180, "elevation": 15, "reason": "view rear components with slight elevation"},
+    {"azimuth": 270, "elevation": -15, "reason": "view left side from below"}
+  ],
+  "analysis": "brief description of what's visible and what's hidden"
+}
+
+Azimuth: 0-360° (0=front, 90=right, 180=back, 270=left)
+Elevation: -45 to 45° (negative=below, positive=above)
+"""
+
+        response = client.chat.completions.create(
+            model=deployment,
+            messages=[
+                {"role": "system", "content": "You are an expert in 3D visualization and camera positioning."},
+                {"role": "user", "content": [
+                    {"type": "text", "text": angle_prompt},
+                    {"type": "image_url", "image_url": {"url": f"data:image/png;base64,{encoded_image}"}}
+                ]}
+            ],
+            max_completion_tokens=2000
+        )
+
+        result = response.choices[0].message.content
+
+        # Parse JSON
+        if "```json" in result:
+            result = result.split("```json")[1].split("```")[0].strip()
+        elif "```" in result:
+            result = result.split("```")[1].split("```")[0].strip()
+
+        angle_data = json.loads(result)
+        suggested_angles = [(a["azimuth"], a["elevation"]) for a in angle_data.get("suggested_angles", [])]
+
+        if logger:
+            logger.info(f"  AI suggested {len(suggested_angles)} optimal angles")
+            logger.info(f"  Analysis: {angle_data.get('analysis', 'N/A')}")
+            for i, angle in enumerate(angle_data.get("suggested_angles", [])):
+                logger.info(f"    Angle {i+1}: Azimuth {angle['azimuth']}°, Elevation {angle['elevation']}° - {angle['reason']}")
+
+        return suggested_angles if suggested_angles else [(90, 0), (180, 0), (270, 30)]
+
+    except Exception as e:
+        if logger:
+            logger.warning(f"Failed to get AI angle suggestions: {str(e)}")
+            logger.warning("Using default angles")
+        # Fallback to default angles
+        return [(90, 0), (180, 0), (270, 30)]
+
+
+def capture_viewport_images(dynamic_angles=True):
+    """
+    Capture viewport images from optimal angles around the scene using safe camera-based rendering.
+
+    Args:
+        dynamic_angles (bool): If True, AI determines optimal angles based on first image
 
     Returns:
         list: List of file paths to the captured images
@@ -116,11 +243,18 @@ def capture_viewport_images(num_angles=4):
     import math
 
     if logger:
-        logger.info(f"Capturing {num_angles} viewport images from different angles...")
+        logger.info(f"Capturing viewport images with {'dynamic' if dynamic_angles else 'fixed'} angles...")
 
     image_paths = []
     temp_dir = tempfile.gettempdir()
+
+    # Initialize variables outside try block so they're accessible in finally
     temp_camera = None
+    camera_data = None
+    original_camera = None
+    original_resolution_x = None
+    original_resolution_y = None
+    original_file_format = None
 
     try:
         # Get scene bounds
@@ -174,18 +308,60 @@ def capture_viewport_images(num_angles=4):
         bpy.context.scene.render.resolution_y = 1024
         bpy.context.scene.render.image_settings.file_format = 'PNG'
 
-        # Capture from different angles
-        for i in range(num_angles):
+        scene_bounds = {"center": center, "size": size}
+
+        # STEP 1: Capture initial/reference image (front view)
+        if logger:
+            logger.info("  Step 1: Capturing initial reference image (front view)...")
+
+        cam_distance = size * 2.0
+        temp_camera.location = Vector((center.x, center.y - cam_distance, center.z + size * 0.3))
+        direction = center - temp_camera.location
+        rot_quat = direction.to_track_quat('-Z', 'Y')
+        temp_camera.rotation_euler = rot_quat.to_euler()
+
+        # Update viewport to show the angle (visual feedback for user)
+        update_viewport_to_camera()
+
+        initial_image_path = os.path.join(temp_dir, "blender_view_initial.png")
+        bpy.context.scene.render.filepath = initial_image_path
+        bpy.ops.render.opengl(write_still=True)
+
+        if os.path.exists(initial_image_path):
+            image_paths.append(initial_image_path)
+            if logger:
+                logger.info(f"    ✓ Initial image captured")
+        else:
+            raise Exception("Failed to capture initial image")
+
+        # STEP 2: Determine optimal angles based on initial image
+        if dynamic_angles:
+            if logger:
+                logger.info("  Step 2: AI analyzing initial image for optimal angles...")
+
+            angles_to_capture = get_optimal_viewing_angles(initial_image_path, scene_bounds)
+        else:
+            # Fixed angles fallback
+            angles_to_capture = [(90, 0), (180, 0), (270, 30)]
+            if logger:
+                logger.info("  Step 2: Using fixed angle set")
+
+        # STEP 3: Capture additional angles
+        if logger:
+            logger.info(f"  Step 3: Capturing {len(angles_to_capture)} additional angles...")
+
+        for i, (azimuth, elevation) in enumerate(angles_to_capture):
             try:
-                angle = (2 * math.pi * i) / num_angles
+                # Convert angles to radians
+                azimuth_rad = math.radians(azimuth)
+                elevation_rad = math.radians(elevation)
 
-                # Position camera in a circle around the model
-                cam_distance = size * 2.0  # Increased distance for safety
-                cam_x = center.x + cam_distance * math.cos(angle)
-                cam_y = center.y + cam_distance * math.sin(angle)
-                cam_z = center.z + size * 0.5  # Slightly elevated
+                # Position camera
+                horizontal_dist = cam_distance * math.cos(elevation_rad)
+                cam_x = center.x + horizontal_dist * math.sin(azimuth_rad)
+                cam_y = center.y + horizontal_dist * math.cos(azimuth_rad)
+                cam_z = center.z + cam_distance * math.sin(elevation_rad)
 
-                # Set camera location
                 temp_camera.location = Vector((cam_x, cam_y, cam_z))
 
                 # Point camera at center
@@ -193,36 +369,26 @@ def capture_viewport_images(num_angles=4):
                 rot_quat = direction.to_track_quat('-Z', 'Y')
                 temp_camera.rotation_euler = rot_quat.to_euler()
 
-                # Render image
-                image_path = os.path.join(temp_dir, f"blender_view_angle_{i}.png")
-                bpy.context.scene.render.filepath = image_path
+                # Update viewport to show the angle (visual feedback for user)
+                update_viewport_to_camera()
 
-                # Use OpenGL render (faster and safer than full render)
+                # Render image
+                image_path = os.path.join(temp_dir, f"blender_view_angle_{i+1}.png")
+                bpy.context.scene.render.filepath = image_path
                 bpy.ops.render.opengl(write_still=True)
 
                 if os.path.exists(image_path):
                     image_paths.append(image_path)
                     if logger:
-                        logger.info(f"  Captured angle {i+1}/{num_angles}: {image_path}")
+                        logger.info(f"    ✓ Angle {i+1}: Azimuth {azimuth}°, Elevation {elevation}°")
                 else:
                     if logger:
-                        logger.warning(f"  Failed to create image for angle {i+1}")
+                        logger.warning(f"    ✗ Failed to create image for angle {i+1}")
 
             except Exception as e:
                 if logger:
-                    logger.warning(f"  Error capturing angle {i+1}: {str(e)}")
+                    logger.warning(f"    ✗ Error capturing angle {i+1}: {str(e)}")
                 continue
-
-        # Restore original settings
-        bpy.context.scene.camera = original_camera
-        bpy.context.scene.render.resolution_x = original_resolution_x
-        bpy.context.scene.render.resolution_y = original_resolution_y
-        bpy.context.scene.render.image_settings.file_format = original_file_format
-
-        # Clean up temporary camera
-        if temp_camera:
-            bpy.data.objects.remove(temp_camera, do_unlink=True)
-            bpy.data.cameras.remove(camera_data, do_unlink=True)
 
         if logger:
             logger.info(f"Successfully captured {len(image_paths)} images")
@@ -232,30 +398,152 @@ def capture_viewport_images(num_angles=4):
     except Exception as e:
         if logger:
             logger.error(f"Error during image capture: {str(e)}")
-
-        # Cleanup on error
-        try:
-            if temp_camera and temp_camera.name in bpy.data.objects:
-                bpy.context.scene.camera = original_camera
-                bpy.data.objects.remove(temp_camera, do_unlink=True)
-                if camera_data and camera_data.name in bpy.data.cameras:
-                    bpy.data.cameras.remove(camera_data, do_unlink=True)
-        except:
-            pass
-
         return []
 
+    finally:
+        # Always cleanup temporary camera and restore settings
+        try:
+            # Restore original settings if they were saved
+            if original_camera is not None:
+                bpy.context.scene.camera = original_camera
+            if original_resolution_x is not None:
+                bpy.context.scene.render.resolution_x = original_resolution_x
+            if original_resolution_y is not None:
+                bpy.context.scene.render.resolution_y = original_resolution_y
+            if original_file_format is not None:
+                bpy.context.scene.render.image_settings.file_format = original_file_format
 
-def analyze_images_with_ai(image_paths, cleanup_images=True):
+            # Clean up temporary camera objects
+            if temp_camera is not None and temp_camera.name in bpy.data.objects:
+                bpy.data.objects.remove(temp_camera, do_unlink=True)
+            if camera_data is not None and camera_data.name in bpy.data.cameras:
+                bpy.data.cameras.remove(camera_data, do_unlink=True)
+        except Exception as cleanup_error:
+            if logger:
+                logger.warning(f"Cleanup warning: {str(cleanup_error)}")
+
+
+def resize_image_for_ai(image_path, target_size=(512, 512)):
+    """
+    Resize image to reduce tokens before sending to AI.
+
+    Args:
+        image_path (str): Path to image file
+        target_size (tuple): Target (width, height) in pixels
+
+    Returns:
+        str: Path to resized image, or original if resize fails
+    """
+    global logger
+
+    # Check if PIL is available
+    try:
+        from PIL import Image
+    except ImportError:
+        if logger:
+            logger.warning("PIL/Pillow not available - using original image size")
+            logger.warning("To reduce token usage, install Pillow: pip install Pillow")
+        return image_path
+
+    try:
+        import os
+
+        # Open and resize image
+        with Image.open(image_path) as img:
+            # Convert RGBA to RGB if needed
+            if img.mode == 'RGBA':
+                img = img.convert('RGB')
+
+            # Resize maintaining aspect ratio
+            img.thumbnail(target_size, Image.Resampling.LANCZOS)
+
+            # Save resized version
+            resized_path = image_path.replace('.png', '_resized.png')
+            img.save(resized_path, 'PNG', optimize=True)
+
+            return resized_path
+
+    except Exception as e:
+        if logger:
+            logger.warning(f"Image resize failed: {str(e)} - using original")
+        return image_path
+
+
+def load_images_in_blender(image_paths):
+    """
+    Load captured images into Blender's image editor for preview.
+
+    Args:
+        image_paths (list): List of image file paths
+    """
+    global logger
+    import os
+
+    try:
+        if logger:
+            logger.info("Loading images in Blender for preview...")
+
+        # Load all images as Blender image datablocks
+        loaded_count = 0
+        for i, img_path in enumerate(image_paths):
+            try:
+                # Check if file exists
+                if not os.path.exists(img_path):
+                    if logger:
+                        logger.warning(f"  Image file not found: {img_path}")
+                    continue
+
+                # Load image
+                img_name = f"Captured_Angle_{i}"
+                if img_name in bpy.data.images:
+                    bpy.data.images.remove(bpy.data.images[img_name])
+
+                img = bpy.data.images.load(img_path, check_existing=False)
+                img.name = img_name
+                loaded_count += 1
+
+                if logger:
+                    logger.info(f"  Loaded: {img_name}")
+
+            except Exception as e:
+                if logger:
+                    logger.warning(f"  Failed to load {img_path}: {str(e)}")
+
+        # Try to open in image editor (safely)
+        try:
+            if bpy.context.screen and bpy.context.screen.areas:
+                for area in bpy.context.screen.areas:
+                    if area.type == 'IMAGE_EDITOR':
+                        if bpy.data.images and "Captured_Angle_0" in bpy.data.images:
+                            area.spaces[0].image = bpy.data.images["Captured_Angle_0"]
+                            if logger:
+                                logger.info("  Opened first image in Image Editor")
+                        break
+        except Exception as e:
+            # Screen access might fail in some contexts - not critical
+            if logger:
+                logger.info("  (Could not auto-open in Image Editor - manually open if needed)")
+
+        if logger:
+            logger.info(f"  {loaded_count}/{len(image_paths)} images loaded successfully")
+            logger.info("  Access them via: Image Editor > Image > Browse")
+
+    except Exception as e:
+        if logger:
+            logger.warning(f"Failed to load images in Blender: {str(e)}")
+
+
+def analyze_images_with_ai(image_paths, cleanup_images=True, show_preview=True):
     """
     Analyze captured viewport images using Azure OpenAI vision capabilities.
 
     Args:
         image_paths (list): List of file paths to captured images
         cleanup_images (bool): Whether to delete temporary images after analysis
+        show_preview (bool): Whether to load images in Blender for preview
 
     Returns:
-        tuple: (success: bool, analysis: str or error message)
+        tuple: (success: bool, analysis: str or error message, tokens_used: int)
     """
     global logger
     import base64
@@ -266,6 +554,10 @@ def analyze_images_with_ai(image_paths, cleanup_images=True):
             logger.section("VISUAL ANALYSIS WITH AI")
             logger.info(f"Analyzing {len(image_paths)} images...")
 
+        # Load images in Blender for preview
+        if show_preview:
+            load_images_in_blender(image_paths)
+
         # Get Azure OpenAI client
         client = get_azure_client()
         deployment = get_deployment_name()
@@ -273,42 +565,51 @@ def analyze_images_with_ai(image_paths, cleanup_images=True):
         if not client or not deployment:
             if logger:
                 logger.error("Azure OpenAI not configured")
-            return False, "Azure OpenAI not configured"
+            return False, "Azure OpenAI not configured", 0
 
-        # Encode images to base64 with size limits
+        # Resize and encode images to base64 with size limits
+        if logger:
+            logger.info("Resizing images to reduce token usage...")
+
         encoded_images = []
-        MAX_IMAGE_SIZE_MB = 5  # Limit to 5MB per image to prevent memory issues
+        resized_paths = []
+        TARGET_SIZE = (512, 512)  # Reduced from 1024x1024 to save tokens
 
         for img_path in image_paths:
             try:
-                # Check if file exists and size is reasonable
+                # Check if file exists
                 if not os.path.exists(img_path):
                     if logger:
                         logger.warning(f"  Image not found: {img_path}")
                     continue
 
-                file_size_mb = os.path.getsize(img_path) / (1024 * 1024)
-                if file_size_mb > MAX_IMAGE_SIZE_MB:
-                    if logger:
-                        logger.warning(f"  Image too large ({file_size_mb:.2f}MB): {img_path}")
-                    continue
+                original_size_mb = os.path.getsize(img_path) / (1024 * 1024)
 
-                with open(img_path, "rb") as img_file:
+                # Resize image to reduce tokens
+                resized_path = resize_image_for_ai(img_path, TARGET_SIZE)
+                resized_paths.append(resized_path)
+
+                resized_size_mb = os.path.getsize(resized_path) / (1024 * 1024)
+
+                # Encode resized image
+                with open(resized_path, "rb") as img_file:
                     image_data = img_file.read()
                     encoded_image = base64.b64encode(image_data).decode('utf-8')
                     encoded_images.append(encoded_image)
+
                     if logger:
-                        logger.info(f"  Encoded image ({file_size_mb:.2f}MB): {img_path}")
+                        logger.info(f"  Resized & encoded: {os.path.basename(img_path)}")
+                        logger.info(f"    Original: {original_size_mb:.2f}MB → Resized: {resized_size_mb:.2f}MB ({resized_size_mb/original_size_mb*100:.1f}% of original)")
 
             except Exception as e:
                 if logger:
-                    logger.warning(f"  Failed to encode {img_path}: {str(e)}")
+                    logger.warning(f"  Failed to process {img_path}: {str(e)}")
                 continue
 
         if not encoded_images:
             if logger:
                 logger.warning("No images were successfully encoded")
-            return False, "No images were successfully encoded"
+            return False, "No images were successfully encoded", 0
 
         # Create vision analysis prompt
         vision_prompt = """You are an expert in robotic kinematics, mechanical engineering, and CAD analysis.
@@ -382,11 +683,18 @@ Provide a detailed visual analysis focusing on the mechanical structure and how 
                 logger.info("Received vision analysis response")
                 logger.info(f"  Response object type: {type(response)}")
 
+            # Track token usage
+            tokens_used = 0
+            if hasattr(response, 'usage') and response.usage:
+                tokens_used = response.usage.total_tokens
+                if logger:
+                    logger.info(f"  Tokens used: {tokens_used} (prompt: {response.usage.prompt_tokens}, completion: {response.usage.completion_tokens})")
+
             if not response or not response.choices:
                 if logger:
                     logger.error("Empty response from API")
                     logger.error(f"  Response: {response}")
-                return False, "Empty response from vision API"
+                return False, "Empty response from vision API", 0
 
             if logger:
                 logger.info(f"  Number of choices: {len(response.choices)}")
@@ -405,7 +713,7 @@ Provide a detailed visual analysis focusing on the mechanical structure and how 
                     logger.error("Vision analysis returned empty content")
                     logger.error(f"  Full response: {response}")
                     logger.error(f"  Message object: {response.choices[0].message}")
-                return False, "Vision analysis returned empty content"
+                return False, "Vision analysis returned empty content", tokens_used
 
             if logger:
                 logger.info("")
@@ -417,38 +725,38 @@ Provide a detailed visual analysis focusing on the mechanical structure and how 
 
             # Cleanup temporary images if requested
             if cleanup_images:
-                cleanup_temp_images(image_paths)
+                cleanup_temp_images(image_paths + resized_paths)
 
-            return True, analysis
+            return True, analysis, tokens_used
 
         except TimeoutError:
             if logger:
                 logger.error("Vision analysis timed out after 60 seconds")
             # Cleanup on error
             if cleanup_images:
-                cleanup_temp_images(image_paths)
-            return False, "Vision analysis timed out - try reducing number of images"
+                cleanup_temp_images(image_paths + resized_paths)
+            return False, "Vision analysis timed out - try reducing number of images", 0
 
         except Exception as api_error:
             if logger:
                 logger.error(f"API call failed: {str(api_error)}")
             # Cleanup on error
             if cleanup_images:
-                cleanup_temp_images(image_paths)
-            return False, f"Vision API call failed: {str(api_error)}"
+                cleanup_temp_images(image_paths + resized_paths)
+            return False, f"Vision API call failed: {str(api_error)}", 0
 
     except Exception as e:
         if logger:
             logger.error(f"Error during vision analysis: {str(e)}")
         # Cleanup on error
         if cleanup_images:
-            cleanup_temp_images(image_paths)
-        return False, f"Error during vision analysis: {str(e)}"
+            cleanup_temp_images(image_paths + resized_paths)
+        return False, f"Error during vision analysis: {str(e)}", 0
 
 
 def cleanup_temp_images(image_paths):
     """
-    Clean up temporary image files.
+    Clean up temporary image files (including resized versions).
 
     Args:
         image_paths (list): List of image file paths to delete
@@ -766,6 +1074,13 @@ def analyze_scene_with_ai(scene_data, vision_analysis):
         if logger:
             logger.info("Received response from Azure OpenAI")
 
+        # Track token usage
+        tokens_used = 0
+        if hasattr(response, 'usage') and response.usage:
+            tokens_used = response.usage.total_tokens
+            if logger:
+                logger.info(f"  Tokens used: {tokens_used} (prompt: {response.usage.prompt_tokens}, completion: {response.usage.completion_tokens})")
+
         # Parse response
         ai_response = response.choices[0].message.content
 
@@ -783,6 +1098,7 @@ def analyze_scene_with_ai(scene_data, vision_analysis):
                 ai_response = ai_response.split("```")[1].split("```")[0].strip()
 
             result = json.loads(ai_response)
+            result['_tokens_used'] = tokens_used  # Add tokens to result
 
             if logger:
                 logger.section("AI RESPONSE (PARSED JSON)")
@@ -805,9 +1121,106 @@ def analyze_scene_with_ai(scene_data, vision_analysis):
         return False, f"Error during AI analysis: {str(e)}"
 
 
+def check_hierarchy_cycles(scene_data):
+    """
+    Check for cycles in parent-child hierarchy.
+
+    Args:
+        scene_data (dict): Scene data with hierarchy information
+
+    Returns:
+        list: List of detected cycles
+    """
+    hierarchy = scene_data.get("hierarchy", [])
+
+    # Build adjacency list
+    graph = {}
+    for rel in hierarchy:
+        parent = rel["parent"]
+        child = rel["child"]
+        if child not in graph:
+            graph[child] = []
+        graph[child].append(parent)
+
+    # Detect cycles using DFS
+    cycles = []
+    visited = set()
+    rec_stack = set()
+
+    def dfs(node, path):
+        visited.add(node)
+        rec_stack.add(node)
+        path.append(node)
+
+        if node in graph:
+            for neighbor in graph[node]:
+                if neighbor not in visited:
+                    if dfs(neighbor, path.copy()):
+                        return True
+                elif neighbor in rec_stack:
+                    # Found a cycle
+                    cycle_start = path.index(neighbor)
+                    cycles.append(path[cycle_start:] + [neighbor])
+                    return True
+
+        rec_stack.remove(node)
+        return False
+
+    for node in graph:
+        if node not in visited:
+            dfs(node, [])
+
+    return cycles
+
+
+def check_pivot_positions(objects):
+    """
+    Check if object origins/pivots are properly positioned.
+
+    Args:
+        objects (list): List of Blender objects
+
+    Returns:
+        dict: Issues with pivot positions
+    """
+    issues = []
+
+    for obj_name in objects:
+        obj = bpy.data.objects.get(obj_name)
+        if not obj:
+            continue
+
+        # Check if origin is at (0,0,0) in local space (common issue)
+        if obj.location.length > 0.001:  # Small tolerance
+            # Check if origin is far from geometry center
+            if obj.type == 'MESH' and obj.data.vertices:
+                # Calculate geometry center in world space
+                verts_world = [obj.matrix_world @ v.co for v in obj.data.vertices]
+                geom_center = sum(verts_world, Vector((0,0,0))) / len(verts_world)
+                origin_world = obj.matrix_world.translation
+
+                distance = (geom_center - origin_world).length
+                if distance > 0.1:  # 0.1 unit threshold
+                    issues.append({
+                        "object": obj_name,
+                        "issue": "pivot_far_from_geometry",
+                        "distance": distance,
+                        "suggestion": "Consider centering the origin to geometry"
+                    })
+
+    return issues
+
+
 def validate_link_suggestions(ai_result, scene_data, vision_analysis):
     """
-    Validate AI-generated link suggestions using domain knowledge.
+    Validate AI-generated link suggestions using comprehensive domain knowledge.
+
+    Validation stages:
+    1. Conceptual Validation (Hierarchy & Structure)
+    2. Naming Convention Validation
+    3. Parent-Child Relationship Validation
+    4. Pivot/Origin Position Validation
+    5. AI-Assisted Structural Validation
 
     Args:
         ai_result (dict): AI-generated link suggestions
@@ -820,8 +1233,8 @@ def validate_link_suggestions(ai_result, scene_data, vision_analysis):
     global logger
     try:
         if logger:
-            logger.section("LINK VALIDATION WITH VISUAL CONTEXT")
-            logger.info("Validating AI-generated links with domain knowledge...")
+            logger.section("COMPREHENSIVE LINK VALIDATION")
+            logger.info("Stage 1: Conceptual Validation (Hierarchy & Structure)")
 
         if not vision_analysis:
             if logger:
@@ -834,13 +1247,36 @@ def validate_link_suggestions(ai_result, scene_data, vision_analysis):
         links = ai_result.get("links", [])
         all_objects = {obj["name"] for obj in scene_data.get("objects", [])}
 
-        # Check 1: Minimum number of links
-        if len(links) < 1:
-            validation_issues.append("ERROR: No links were generated")
-        elif len(links) == 1:
-            warnings.append("WARNING: Only 1 link generated - most mechanisms need multiple links")
+        # ===== STAGE 1: CONCEPTUAL VALIDATION =====
+        if logger:
+            logger.info("  Checking hierarchy cycles...")
 
-        # Check 2: All objects assigned
+        # Check 1.1: Hierarchy cycles
+        cycles = check_hierarchy_cycles(scene_data)
+        if cycles:
+            for cycle in cycles:
+                cycle_str = " → ".join(cycle)
+                validation_issues.append(f"❌ CYCLE DETECTED: {cycle_str}")
+                if logger:
+                    logger.error(f"    Cycle: {cycle_str}")
+        else:
+            if logger:
+                logger.info("    ✓ No hierarchy cycles detected")
+
+        # Check 1.2: Minimum number of links
+        if logger:
+            logger.info("  Checking link count...")
+        if len(links) < 1:
+            validation_issues.append("❌ ERROR: No links were generated")
+        elif len(links) == 1:
+            warnings.append("⚠️  WARNING: Only 1 link generated - most mechanisms need multiple links")
+        else:
+            if logger:
+                logger.info(f"    ✓ {len(links)} links generated")
+
+        # Check 1.3: All objects assigned
+        if logger:
+            logger.info("  Checking object assignments...")
         assigned_objects = set()
         for link in links:
             for obj_name in link.get("objects", []):
@@ -848,9 +1284,14 @@ def validate_link_suggestions(ai_result, scene_data, vision_analysis):
 
         unassigned = all_objects - assigned_objects
         if unassigned:
-            warnings.append(f"WARNING: {len(unassigned)} objects not assigned to any link: {', '.join(list(unassigned)[:5])}")
+            warnings.append(f"⚠️  {len(unassigned)} objects not assigned: {', '.join(list(unassigned)[:5])}")
+            if logger:
+                logger.warning(f"    {len(unassigned)} unassigned objects")
+        else:
+            if logger:
+                logger.info(f"    ✓ All {len(all_objects)} objects assigned")
 
-        # Check 3: No duplicate assignments
+        # Check 1.4: No duplicate assignments
         object_count = {}
         for link in links:
             for obj_name in link.get("objects", []):
@@ -858,15 +1299,43 @@ def validate_link_suggestions(ai_result, scene_data, vision_analysis):
 
         duplicates = {obj: count for obj, count in object_count.items() if count > 1}
         if duplicates:
-            validation_issues.append(f"ERROR: Objects assigned to multiple links: {duplicates}")
+            validation_issues.append(f"❌ Objects assigned to multiple links: {duplicates}")
+            if logger:
+                logger.error(f"    Duplicate assignments detected")
+        else:
+            if logger:
+                logger.info("    ✓ No duplicate assignments")
 
-        # Check 4: Empty links
+        # Check 1.5: Empty links
         empty_links = [link.get("name", "unnamed") for link in links if not link.get("objects", [])]
         if empty_links:
-            validation_issues.append(f"ERROR: Links with no objects: {', '.join(empty_links)}")
+            validation_issues.append(f"❌ Links with no objects: {', '.join(empty_links)}")
 
-        # Check 5: Parent-child separation check
+        # ===== STAGE 2: NAMING CONVENTION VALIDATION =====
+        if logger:
+            logger.info("")
+            logger.info("Stage 2: Naming Convention Validation")
+
+        naming_issues = 0
+        for link in links:
+            link_name = link.get("name", "")
+            if not link_name:
+                validation_issues.append("❌ Link with no name found")
+                naming_issues += 1
+            elif not link_name.endswith("_link") and not link_name.endswith("Link"):
+                warnings.append(f"ℹ️  Link '{link_name}' doesn't follow naming convention (should end with '_link')")
+                naming_issues += 1
+
+        if naming_issues == 0 and logger:
+            logger.info("  ✓ All links follow naming conventions")
+
+        # ===== STAGE 3: PARENT-CHILD RELATIONSHIP VALIDATION =====
+        if logger:
+            logger.info("")
+            logger.info("Stage 3: Parent-Child Relationship Validation")
+
         hierarchy = scene_data.get("hierarchy", [])
+        relationship_issues = 0
         for rel in hierarchy:
             parent = rel["parent"]
             child = rel["child"]
@@ -881,56 +1350,104 @@ def validate_link_suggestions(ai_result, scene_data, vision_analysis):
                 if child in link.get("objects", []):
                     child_link = link.get("name")
 
-            # If both in same link, it might be intentional (rigid connection)
-            # but worth flagging for review
             if parent_link and child_link and parent_link == child_link:
-                warnings.append(f"INFO: Parent '{parent}' and child '{child}' are in same link '{parent_link}' - verify this is a rigid connection")
+                warnings.append(f"ℹ️  Parent '{parent}' and child '{child}' in same link '{parent_link}' - verify rigid connection")
+                relationship_issues += 1
 
-        # Check 6: Link naming conventions
-        for link in links:
-            link_name = link.get("name", "")
-            if not link_name:
-                validation_issues.append("ERROR: Link with no name found")
-            elif not link_name.endswith("_link") and not link_name.endswith("Link"):
-                warnings.append(f"INFO: Link '{link_name}' doesn't follow naming convention (should end with '_link')")
+        if relationship_issues == 0 and logger:
+            logger.info("  ✓ All parent-child relationships valid")
 
-        # Check 7: Use AI to validate based on domain knowledge (ALWAYS runs with vision analysis)
+        # ===== STAGE 4: PIVOT/ORIGIN POSITION VALIDATION =====
         if logger:
-            logger.info("Requesting AI domain validation...")
+            logger.info("")
+            logger.info("Stage 4: Pivot/Origin Position Validation")
+
+        pivot_issues = check_pivot_positions(assigned_objects)
+        if pivot_issues:
+            for issue in pivot_issues:
+                warnings.append(f"⚠️  {issue['object']}: {issue['suggestion']} (distance: {issue['distance']:.3f})")
+                if logger:
+                    logger.warning(f"  {issue['object']}: pivot {issue['distance']:.3f} units from geometry center")
+        else:
+            if logger:
+                logger.info("  ✓ All pivot positions acceptable")
+
+        # ===== STAGE 5: AI-ASSISTED STRUCTURAL VALIDATION =====
+        if logger:
+            logger.info("")
+            logger.info("Stage 5: AI-Assisted Structural Validation")
+            logger.info("  Requesting comprehensive AI validation...")
 
         client = get_azure_client()
         deployment = get_deployment_name()
 
         if client and deployment:
-            validation_prompt = f"""You are an expert in robotic kinematics. Review these generated links and validate them.
+            validation_prompt = f"""You are an expert in robotic kinematics, SDF/URDF formats, and mechanical validation.
 
-VISUAL ANALYSIS:
+Review the generated link structure against best practices for simulation-ready robot models.
+
+VISUAL ANALYSIS (from multi-angle inspection):
 {vision_analysis}
 
-GENERATED LINKS:
+GENERATED LINK STRUCTURE:
 {json.dumps(ai_result, indent=2)}
 
-VALIDATION TASK:
-1. Do these links make sense given the visual analysis?
-2. Are there any obvious errors in link grouping?
-3. Are joints properly separated (different links connected at joints)?
-4. Does the link hierarchy follow robotic conventions?
+HIERARCHY DATA:
+{json.dumps(scene_data.get("hierarchy", []), indent=2)}
+
+COMPREHENSIVE VALIDATION CHECKLIST:
+
+1. **Hierarchy & Structure**
+   - Is there a clear base_link (fixed/root)?
+   - Are parent-child relationships logical?
+   - Are there any circular dependencies?
+   - Does the kinematic chain make sense?
+
+2. **Link Separation**
+   - Are moving parts separated into different links?
+   - Are joints (revolute/prismatic) properly identified?
+   - Are rigid connections kept in same link?
+
+3. **Naming & Convention**
+   - Are links named descriptively (base_link, arm_link, etc.)?
+   - Are joint connection points identifiable?
+   - Do names follow standard robotics conventions?
+
+4. **Mechanical Validity**
+   - Does the structure match common robot patterns (serial arm, parallel gripper, wheeled base)?
+   - Are symmetric parts (left/right) handled correctly?
+   - Are degrees of freedom properly accounted for?
+
+5. **SDF/URDF Export Readiness**
+   - Will this structure export to valid SDF/URDF?
+   - Are there any common pitfalls (floating links, missing base, etc.)?
+   - Are inertial properties likely to be computable?
+
+6. **Visual-to-Structure Alignment**
+   - Does the link grouping match what you saw in the visual analysis?
+   - Are any visual joints missed in the link structure?
+   - Are there discrepancies between visual and structural interpretation?
 
 Respond with JSON:
 {{
   "is_valid": true/false,
   "confidence": 0-100,
-  "issues": ["list of any issues found"],
-  "suggestions": ["list of improvements"]
+  "structural_score": 0-100,
+  "critical_issues": ["blocking issues that prevent export"],
+  "warnings": ["issues that may cause problems"],
+  "suggestions": ["improvements for better structure"],
+  "export_readiness": "ready/needs_fixes/major_issues",
+  "kinematic_chain_valid": true/false
 }}"""
 
             try:
                 response = client.chat.completions.create(
                     model=deployment,
                     messages=[
-                        {"role": "system", "content": "You are an expert in robotics validation."},
+                        {"role": "system", "content": "You are an expert in robotics validation, SDF/URDF formats, and mechanical simulation."},
                         {"role": "user", "content": validation_prompt}
-                    ]
+                    ],
+                    max_completion_tokens=16000
                 )
 
                 validation_response = response.choices[0].message.content
@@ -944,47 +1461,128 @@ Respond with JSON:
                 ai_validation = json.loads(validation_response)
 
                 if logger:
-                    logger.info("AI Validation Result:")
-                    logger.info(f"  Valid: {ai_validation.get('is_valid', 'unknown')}")
-                    logger.info(f"  Confidence: {ai_validation.get('confidence', 'unknown')}%")
+                    logger.info("")
+                    logger.info("  AI Validation Results:")
+                    logger.info(f"    Overall Valid: {ai_validation.get('is_valid', 'unknown')}")
+                    logger.info(f"    Confidence: {ai_validation.get('confidence', 'unknown')}%")
+                    logger.info(f"    Structural Score: {ai_validation.get('structural_score', 'unknown')}/100")
+                    logger.info(f"    Export Readiness: {ai_validation.get('export_readiness', 'unknown')}")
+                    logger.info(f"    Kinematic Chain Valid: {ai_validation.get('kinematic_chain_valid', 'unknown')}")
 
-                if not ai_validation.get("is_valid", True):
-                    for issue in ai_validation.get("issues", []):
-                        validation_issues.append(f"AI VALIDATION: {issue}")
+                # Add critical issues
+                critical = ai_validation.get("critical_issues", [])
+                if critical:
+                    if logger:
+                        logger.error(f"    Critical Issues: {len(critical)}")
+                    for issue in critical:
+                        validation_issues.append(f"❌ CRITICAL: {issue}")
 
-                for suggestion in ai_validation.get("suggestions", []):
-                    warnings.append(f"AI SUGGESTION: {suggestion}")
+                # Add warnings from AI
+                ai_warnings = ai_validation.get("warnings", [])
+                if ai_warnings:
+                    if logger:
+                        logger.warning(f"    Warnings: {len(ai_warnings)}")
+                    for warning in ai_warnings:
+                        warnings.append(f"⚠️  AI: {warning}")
+
+                # Add suggestions
+                suggestions = ai_validation.get("suggestions", [])
+                if suggestions:
+                    if logger:
+                        logger.info(f"    Suggestions: {len(suggestions)}")
+                    for suggestion in suggestions:
+                        warnings.append(f"💡 SUGGESTION: {suggestion}")
+
+                # Export readiness check
+                export_status = ai_validation.get("export_readiness", "unknown")
+                if export_status == "major_issues":
+                    validation_issues.append("❌ EXPORT: Major issues detected - not ready for SDF/URDF export")
+                elif export_status == "needs_fixes":
+                    warnings.append("⚠️  EXPORT: Minor fixes needed before export")
+                elif export_status == "ready":
+                    if logger:
+                        logger.info("    ✓ Ready for SDF/URDF export")
 
             except Exception as e:
                 if logger:
-                    logger.warning(f"AI validation failed: {str(e)}")
-                warnings.append(f"AI validation could not be performed: {str(e)}")
+                    logger.warning(f"  AI validation failed: {str(e)}")
+                warnings.append(f"⚠️  AI validation could not be performed: {str(e)}")
 
-        # Generate validation report
-        report = "=" * 60 + "\n"
-        report += "LINK VALIDATION REPORT\n"
-        report += "=" * 60 + "\n\n"
-        report += f"Total Links Generated: {len(links)}\n"
-        report += f"Total Objects in Scene: {len(all_objects)}\n"
-        report += f"Objects Assigned: {len(assigned_objects)}\n"
-        report += f"Objects Unassigned: {len(unassigned)}\n\n"
+        # ===== GENERATE COMPREHENSIVE VALIDATION REPORT =====
+        if logger:
+            logger.info("")
+            logger.info("=" * 60)
+            logger.info("VALIDATION COMPLETE")
+            logger.info("=" * 60)
 
+        report = "=" * 80 + "\n"
+        report += "         COMPREHENSIVE LINK VALIDATION REPORT         \n"
+        report += "=" * 80 + "\n\n"
+
+        # Summary Section
+        report += "📊 SUMMARY\n"
+        report += "-" * 80 + "\n"
+        report += f"Total Links Generated:     {len(links)}\n"
+        report += f"Total Objects in Scene:    {len(all_objects)}\n"
+        report += f"Objects Assigned:          {len(assigned_objects)}\n"
+        report += f"Objects Unassigned:        {len(unassigned)}\n"
+        report += f"Hierarchy Cycles Detected: {len(cycles)}\n"
+        report += f"Pivot Issues Found:        {len(pivot_issues)}\n"
+        report += "\n"
+
+        # Validation Stages Summary
+        report += "✅ VALIDATION STAGES COMPLETED\n"
+        report += "-" * 80 + "\n"
+        report += "1. ✓ Conceptual Validation (Hierarchy & Structure)\n"
+        report += "2. ✓ Naming Convention Validation\n"
+        report += "3. ✓ Parent-Child Relationship Validation\n"
+        report += "4. ✓ Pivot/Origin Position Validation\n"
+        report += "5. ✓ AI-Assisted Structural Validation\n"
+        report += "\n"
+
+        # Critical Issues Section
         if validation_issues:
-            report += "CRITICAL ISSUES:\n"
-            for issue in validation_issues:
-                report += f"  ❌ {issue}\n"
+            report += "❌ CRITICAL ISSUES (MUST FIX BEFORE EXPORT)\n"
+            report += "-" * 80 + "\n"
+            for i, issue in enumerate(validation_issues, 1):
+                report += f"{i}. {issue}\n"
             report += "\n"
 
+        # Warnings Section
         if warnings:
-            report += "WARNINGS & INFO:\n"
-            for warning in warnings:
-                report += f"  ⚠️  {warning}\n"
+            report += "⚠️  WARNINGS & SUGGESTIONS\n"
+            report += "-" * 80 + "\n"
+            for i, warning in enumerate(warnings, 1):
+                report += f"{i}. {warning}\n"
             report += "\n"
 
+        # Success or Needs Attention
         if not validation_issues and not warnings:
-            report += "✅ All validation checks passed!\n\n"
+            report += "🎉 EXCELLENT! All validation checks passed!\n"
+            report += "   Your link structure is ready for SDF/URDF export.\n\n"
+        elif not validation_issues:
+            report += "✅ VALIDATION PASSED\n"
+            report += "   No critical issues found. Review warnings for optimization.\n\n"
+        else:
+            report += "🔴 VALIDATION FAILED\n"
+            report += "   Critical issues detected. Fix issues before proceeding.\n\n"
 
-        report += "=" * 60 + "\n"
+        # Recommendations
+        report += "💡 NEXT STEPS\n"
+        report += "-" * 80 + "\n"
+        if not validation_issues:
+            report += "1. Review any warnings above\n"
+            report += "2. Verify link structure in Blender outliner\n"
+            report += "3. Check joint positions and orientations\n"
+            report += "4. Proceed with SDF/URDF export when ready\n"
+            report += "5. Test in Gazebo/Isaac Sim for final validation\n"
+        else:
+            report += "1. Fix all critical issues listed above\n"
+            report += "2. Re-run Auto-Link generation\n"
+            report += "3. Verify fixes in Blender\n"
+            report += "4. Run validation again\n"
+
+        report += "\n" + "=" * 80 + "\n"
 
         if logger:
             logger.info("")
@@ -993,12 +1591,288 @@ Respond with JSON:
 
         is_valid = len(validation_issues) == 0
 
+        if logger:
+            if is_valid:
+                logger.info("✅ Validation PASSED - Links are valid")
+            else:
+                logger.error(f"❌ Validation FAILED - {len(validation_issues)} critical issues")
+
         return is_valid, report, ai_result
 
     except Exception as e:
         if logger:
             logger.error(f"Validation error: {str(e)}")
         return False, f"Validation failed: {str(e)}", ai_result
+
+
+def suggest_fixes_for_validation_issues(ai_result, validation_issues, warnings, scene_data, vision_analysis, iteration_history=None):
+    """
+    Use AI to suggest fixes for validation issues, taking previous attempts into account.
+
+    Args:
+        ai_result (dict): Current link structure
+        validation_issues (list): List of critical validation issues
+        warnings (list): List of warnings
+        scene_data (dict): Scene data
+        vision_analysis (str): Visual analysis
+        iteration_history (list): Previous iteration results and fixes attempted
+
+    Returns:
+        tuple: (success: bool, fixed_result: dict or error message)
+    """
+    global logger
+
+    try:
+        if logger:
+            logger.info("")
+            logger.info("=" * 60)
+            logger.info("REQUESTING AI FIXES FOR VALIDATION ISSUES")
+            logger.info("=" * 60)
+
+        client = get_azure_client()
+        deployment = get_deployment_name()
+
+        if not client or not deployment:
+            return False, "Azure OpenAI not available for fixes"
+
+        # Build iteration history context
+        history_context = ""
+        if iteration_history and len(iteration_history) > 0:
+            history_context = "\n\nPREVIOUS ITERATION HISTORY:\n"
+            history_context += "=" * 60 + "\n"
+            for i, hist in enumerate(iteration_history, 1):
+                history_context += f"\nIteration {i}:\n"
+                history_context += f"  Score: {hist.get('score', 'unknown')}\n"
+                history_context += f"  Issues: {hist.get('issues_count', 0)}\n"
+                history_context += f"  Warnings: {hist.get('warnings_count', 0)}\n"
+                if hist.get('fixes_applied'):
+                    history_context += f"  Fixes attempted:\n"
+                    for fix in hist['fixes_applied'][:5]:  # Limit to avoid token bloat
+                        history_context += f"    - {fix}\n"
+                if hist.get('remaining_issues'):
+                    history_context += f"  Issues that remained:\n"
+                    for issue in hist['remaining_issues'][:3]:
+                        history_context += f"    - {issue}\n"
+
+            history_context += "\nIMPORTANT: Learn from previous attempts. Don't repeat fixes that didn't work.\n"
+            history_context += "Focus on NEW approaches to solve remaining issues.\n"
+            history_context += "=" * 60 + "\n"
+
+        fix_prompt = f"""You are an expert in robotic link structure and SDF/URDF generation.
+
+The current link structure has validation issues that need to be fixed.
+
+VISUAL ANALYSIS:
+{vision_analysis}
+
+CURRENT LINK STRUCTURE:
+{json.dumps(ai_result, indent=2)}
+
+VALIDATION ISSUES:
+{json.dumps(validation_issues, indent=2)}
+
+WARNINGS:
+{json.dumps(warnings[:10], indent=2)}
+
+SCENE HIERARCHY:
+{json.dumps(scene_data.get("hierarchy", []), indent=2)}
+{history_context}
+
+TASK:
+Analyze the validation issues and provide a CORRECTED link structure that fixes ALL critical issues.
+
+{"CRITICAL: This is not the first attempt. Review the iteration history above." if history_context else ""}
+{"Learn from what didn't work before and try a DIFFERENT approach." if history_context else ""}
+
+FIXES TO APPLY:
+1. Fix any circular dependencies
+2. Ensure proper object assignments (no duplicates, no orphans)
+3. Correct naming conventions
+4. Separate moving parts into different links
+5. Ensure parent-child relationships are logical
+6. Create a valid kinematic chain
+
+Respond with JSON in the EXACT same format as the input:
+{{
+  "links": [
+    {{
+      "name": "link_name",
+      "objects": ["object1", "object2"],
+      "reasoning": "why these objects form this link"
+    }}
+  ],
+  "suggestions": "what was fixed and why (explain how this differs from previous attempts)",
+  "fixes_applied": ["list of specific fixes applied in this iteration"]
+}}
+
+CRITICAL: Every object must be assigned to exactly ONE link. Fix all issues found.
+"""
+
+        if logger:
+            logger.info("Sending validation issues to AI for fix suggestions...")
+
+        response = client.chat.completions.create(
+            model=deployment,
+            messages=[
+                {"role": "system", "content": "You are an expert in robotics and fixing link structure issues."},
+                {"role": "user", "content": fix_prompt}
+            ],
+            max_completion_tokens=16000
+        )
+
+        fix_response = response.choices[0].message.content
+
+        # Parse JSON
+        if "```json" in fix_response:
+            fix_response = fix_response.split("```json")[1].split("```")[0].strip()
+        elif "```" in fix_response:
+            fix_response = fix_response.split("```")[1].split("```")[0].strip()
+
+        fixed_result = json.loads(fix_response)
+
+        if logger:
+            logger.info("AI provided fixed link structure")
+            logger.info(f"  Fixes applied: {len(fixed_result.get('fixes_applied', []))}")
+            for fix in fixed_result.get('fixes_applied', []):
+                logger.info(f"    - {fix}")
+
+        return True, fixed_result
+
+    except Exception as e:
+        if logger:
+            logger.error(f"Failed to get AI fixes: {str(e)}")
+        return False, f"Failed to get fixes: {str(e)}"
+
+
+def iterative_validation_and_fix(initial_result, scene_data, vision_analysis, max_iterations=3):
+    """
+    Iteratively validate and fix link structure until validation passes or max iterations reached.
+    Builds iteration history to help AI learn from previous attempts.
+
+    Args:
+        initial_result (dict): Initial link structure
+        scene_data (dict): Scene data
+        vision_analysis (str): Visual analysis
+        max_iterations (int): Maximum number of fix iterations
+
+    Returns:
+        tuple: (final_result: dict, validation_report: str, iteration_count: int)
+    """
+    global logger
+
+    if logger:
+        logger.info("")
+        logger.info("=" * 80)
+        logger.info("STARTING ITERATIVE VALIDATION & FIX LOOP")
+        logger.info("=" * 80)
+        logger.info(f"Maximum iterations: {max_iterations}")
+        logger.info("Learning from each iteration to improve fixes")
+
+    current_result = initial_result
+    iteration = 0
+    best_result = initial_result
+    best_score = float('inf')  # Lower is better (fewer issues)
+    iteration_history = []  # Track what we've tried
+
+    while iteration < max_iterations:
+        iteration += 1
+
+        if logger:
+            logger.info("")
+            logger.info("=" * 60)
+            logger.info(f"ITERATION {iteration}/{max_iterations}")
+            logger.info("=" * 60)
+
+        # Validate current structure
+        is_valid, validation_report, validated_result = validate_link_suggestions(
+            current_result, scene_data, vision_analysis
+        )
+
+        # Calculate score (number of issues)
+        issues_count = validation_report.count("❌")
+        warnings_count = validation_report.count("⚠️")
+        current_score = issues_count * 10 + warnings_count  # Weight issues more than warnings
+
+        if logger:
+            logger.info(f"Validation Score: {current_score} (Issues: {issues_count}, Warnings: {warnings_count})")
+
+        # Extract current issues for history
+        validation_issues = []
+        warnings_list = []
+        for line in validation_report.split('\n'):
+            if "❌" in line:
+                validation_issues.append(line.strip())
+            elif "⚠️" in line:
+                warnings_list.append(line.strip())
+
+        # Check if this is the best so far
+        if current_score < best_score:
+            best_score = current_score
+            best_result = current_result
+            if logger:
+                logger.info("✓ This is the best result so far - score improved!")
+
+        # If validation passed, we're done!
+        if is_valid:
+            if logger:
+                logger.info("")
+                logger.info("=" * 60)
+                logger.info(f"✅ VALIDATION PASSED ON ITERATION {iteration}")
+                logger.info("=" * 60)
+            return current_result, validation_report, iteration
+
+        # If this is the last iteration, return best result
+        if iteration >= max_iterations:
+            if logger:
+                logger.info("")
+                logger.info("=" * 60)
+                logger.info(f"⚠️  MAX ITERATIONS REACHED - RETURNING BEST RESULT")
+                logger.info(f"   Best Score: {best_score} (achieved in earlier iteration)")
+                logger.info("=" * 60)
+            # Re-validate best result to get its report
+            _, final_report, _ = validate_link_suggestions(best_result, scene_data, vision_analysis)
+            return best_result, final_report, iteration
+
+        if logger:
+            logger.info(f"Found {len(validation_issues)} critical issues to fix")
+
+        # Record this iteration before requesting fixes
+        iteration_record = {
+            "iteration": iteration,
+            "score": current_score,
+            "issues_count": issues_count,
+            "warnings_count": warnings_count,
+            "fixes_applied": current_result.get("fixes_applied", []),
+            "remaining_issues": validation_issues[:5]  # Limit to top 5 to save tokens
+        }
+        iteration_history.append(iteration_record)
+
+        if logger and len(iteration_history) > 1:
+            logger.info(f"Learning from {len(iteration_history)} previous iteration(s)")
+
+        # Get AI to suggest fixes, passing iteration history
+        fix_success, fix_result = suggest_fixes_for_validation_issues(
+            current_result, validation_issues, warnings_list, scene_data, vision_analysis,
+            iteration_history=iteration_history
+        )
+
+        if not fix_success:
+            if logger:
+                logger.warning(f"Failed to get fixes: {fix_result}")
+                logger.info("Returning best result so far")
+            # Re-validate best result
+            _, final_report, _ = validate_link_suggestions(best_result, scene_data, vision_analysis)
+            return best_result, final_report, iteration
+
+        # Use fixed result for next iteration
+        current_result = fix_result
+
+        if logger:
+            logger.info(f"Proceeding to iteration {iteration + 1} with AI-suggested fixes")
+
+    # Should not reach here, but return best result just in case
+    _, final_report, _ = validate_link_suggestions(best_result, scene_data, vision_analysis)
+    return best_result, final_report, iteration
 
 
 def cleanup_existing_autolinks():
@@ -1185,6 +2059,11 @@ class SDFG_OT_AutoGenerateLinks(bpy.types.Operator):
 
     def execute(self, context):
         global logger
+        import time
+
+        # Start timing
+        start_time = time.time()
+        total_tokens = 0
 
         # Initialize logger
         logger = BlenderTextLogger("Auto-Link Log")
@@ -1202,11 +2081,11 @@ class SDFG_OT_AutoGenerateLinks(bpy.types.Operator):
         logger.info("Azure OpenAI connection verified")
         logger.info("")
 
-        # Step 1: Capture viewport images (REQUIRED)
-        logger.section("STEP 1: VISUAL CAPTURE")
-        self.report({'INFO'}, "Capturing viewport images...")
+        # Step 1: Capture viewport images with dynamic angles (REQUIRED)
+        logger.section("STEP 1: DYNAMIC VISUAL CAPTURE")
+        self.report({'INFO'}, "Capturing viewport images with AI-optimized angles...")
 
-        image_paths = capture_viewport_images(num_angles=3)
+        image_paths = capture_viewport_images(dynamic_angles=True)
 
         if not image_paths or len(image_paths) == 0:
             logger.error("Failed to capture viewport images")
@@ -1227,7 +2106,8 @@ class SDFG_OT_AutoGenerateLinks(bpy.types.Operator):
         logger.section("STEP 2: VISUAL ANALYSIS")
         self.report({'INFO'}, "Analyzing model structure from images...")
 
-        vision_success, vision_result = analyze_images_with_ai(image_paths)
+        vision_success, vision_result, vision_tokens = analyze_images_with_ai(image_paths)
+        total_tokens += vision_tokens
 
         if not vision_success:
             logger.error(f"Visual analysis failed: {vision_result}")
@@ -1274,27 +2154,36 @@ class SDFG_OT_AutoGenerateLinks(bpy.types.Operator):
             )
             return {'CANCELLED'}
 
+        # Extract tokens from result
+        total_tokens += result.get('_tokens_used', 0)
+
         logger.info(f"AI generated {len(result.get('links', []))} link suggestions")
 
-        # Step 5: Validate link suggestions
+        # Step 5: Iterative Validation & Fixing
         logger.info("")
-        logger.section("STEP 5: VALIDATION")
-        self.report({'INFO'}, "Validating generated links...")
-        is_valid, validation_report, validated_result = validate_link_suggestions(
-            result, scene_data, vision_analysis
+        logger.section("STEP 5: ITERATIVE VALIDATION & FIXING")
+        self.report({'INFO'}, "Running iterative validation and fixing...")
+
+        final_result, validation_report, iterations_used = iterative_validation_and_fix(
+            result, scene_data, vision_analysis, max_iterations=3
         )
 
-        if not is_valid:
-            logger.warning("Validation found issues with generated links")
-            logger.warning("Proceeding with caution - review the validation report")
+        logger.info("")
+        logger.info(f"Iterative process completed after {iterations_used} iteration(s)")
+
+        # Check final validation status
+        is_valid = "VALIDATION PASSED" in validation_report or validation_report.count("❌") == 0
+
+        if is_valid:
+            logger.info("✅ Final validation PASSED - links are ready")
         else:
-            logger.info("Validation passed - links look good!")
+            logger.warning("⚠️  Some issues remain - using best result from iterations")
 
         # Step 6: Create links
         logger.info("")
         logger.section("STEP 6: LINK CREATION")
         self.report({'INFO'}, "Creating link collections...")
-        success, message = create_links_from_ai_suggestion(validated_result)
+        success, message = create_links_from_ai_suggestion(final_result)
 
         if success:
             logger.info("")
@@ -1313,8 +2202,10 @@ class SDFG_OT_AutoGenerateLinks(bpy.types.Operator):
             self.report({'INFO'}, "Links created successfully")
 
             final_message = message
-            final_message += f"\n\nAI Suggestions:\n{result.get('suggestions', 'None')}"
-            final_message += "\n\n📄 Full log with validation details available in 'Auto-Link Log' text"
+            final_message += f"\n\nIterations: {iterations_used}"
+            final_message += f"\nFinal Status: {'✅ Validated' if is_valid else '⚠️ Best Effort'}"
+            final_message += f"\n\nAI Suggestions:\n{final_result.get('suggestions', 'None')}"
+            final_message += "\n\n📄 Full log with iteration details in 'Auto-Link Log' text"
 
             show_message_box(
                 message=final_message,
@@ -1336,6 +2227,20 @@ class SDFG_OT_AutoGenerateLinks(bpy.types.Operator):
                 title="Auto-Link Generation Error",
                 icon="ERROR"
             )
+
+        # Calculate and save statistics
+        elapsed_time = time.time() - start_time
+        context.scene.autolink_time_taken = elapsed_time
+        context.scene.autolink_tokens_used = total_tokens
+        context.scene.autolink_stats_available = True
+
+        logger.info("")
+        logger.info("=" * 80)
+        logger.info("STATISTICS")
+        logger.info("=" * 80)
+        logger.info(f"Total Time: {elapsed_time:.2f} seconds ({elapsed_time/60:.2f} minutes)")
+        logger.info(f"Total Tokens Used: {total_tokens:,}")
+        logger.info("")
 
         # Refresh UI
         context.area.tag_redraw()
@@ -1380,6 +2285,227 @@ class SDFG_OT_ViewAutoLinkLog(bpy.types.Operator):
             return {'CANCELLED'}
 
 
+class SDFG_OT_ViewValidationLog(bpy.types.Operator):
+    """View the Link Validation log"""
+
+    bl_idname = "scene.view_validation_log"
+    bl_label = "View Validation Log"
+    bl_description = "Open the Link Validation log in the text editor"
+    bl_options = {"REGISTER"}
+
+    def execute(self, context):
+        # Check if log exists
+        if "Link Validation Log" in bpy.data.texts:
+            log_text = bpy.data.texts["Link Validation Log"]
+
+            # Try to find or create text editor area
+            text_editor_found = False
+            for area in context.screen.areas:
+                if area.type == 'TEXT_EDITOR':
+                    area.spaces[0].text = log_text
+                    text_editor_found = True
+                    self.report({'INFO'}, "Validation log opened in text editor")
+                    break
+
+            if not text_editor_found:
+                # Change current area to text editor
+                for area in context.screen.areas:
+                    if area.type == 'VIEW_3D':
+                        area.type = 'TEXT_EDITOR'
+                        area.spaces[0].text = log_text
+                        self.report({'INFO'}, "Validation log opened in text editor")
+                        break
+
+            return {'FINISHED'}
+        else:
+            self.report({'WARNING'}, "No validation log found. Run 'Validate Links' first.")
+            return {'CANCELLED'}
+
+
+def extract_existing_link_structure():
+    """
+    Extract existing link structure from the Blender scene.
+
+    Returns:
+        dict: Link structure in AI result format, or None if no links found
+    """
+    global logger
+
+    if logger:
+        logger.info("Extracting existing link structure from scene...")
+
+    links = []
+
+    # Find all LinkCollection type collections
+    for collection in bpy.data.collections:
+        if hasattr(collection, 'collection_type') and collection.collection_type == "LinkCollection":
+            # Find the visual collection child
+            visual_collection = None
+            for child in collection.children:
+                if hasattr(child, 'collection_type') and child.collection_type == "VisualCollection":
+                    visual_collection = child
+                    break
+
+            if visual_collection:
+                # Extract objects from visual collection
+                objects = [obj.name for obj in visual_collection.objects]
+
+                # Extract link name (remove _link suffix if present)
+                link_name = collection.name
+                if link_name.endswith("_link"):
+                    link_name = link_name[:-5]  # Remove _link suffix for clean name
+
+                links.append({
+                    "name": link_name,
+                    "objects": objects,
+                    "reasoning": "Existing link structure from scene"
+                })
+
+                if logger:
+                    logger.info(f"  Found link: {link_name} with {len(objects)} objects")
+
+    if not links:
+        if logger:
+            logger.warning("No existing link collections found in scene")
+        return None
+
+    if logger:
+        logger.info(f"Extracted {len(links)} existing links from scene")
+
+    return {
+        "links": links,
+        "suggestions": "Validation of existing link structure"
+    }
+
+
+class SDFG_OT_ValidateLinksOnly(bpy.types.Operator):
+    """Validate existing link structure without regenerating"""
+
+    bl_idname = "scene.validate_links_only"
+    bl_label = "Validate Existing Links"
+    bl_description = "Run comprehensive validation on existing link structure in the scene"
+    bl_options = {"REGISTER"}
+
+    def execute(self, context):
+        global logger
+
+        # Initialize logger
+        logger = BlenderTextLogger("Link Validation Log")
+        logger.info("Link Validation operator started")
+        logger.info("")
+
+        # Check if there are existing links
+        logger.section("EXTRACTING EXISTING LINK STRUCTURE")
+        self.report({'INFO'}, "Extracting existing links...")
+
+        existing_links = extract_existing_link_structure()
+
+        if not existing_links:
+            logger.error("No existing link collections found in scene")
+            logger.error("Please create links first using 'Auto-Generate Links' or manually")
+            logger.show_in_editor()
+            self.report({'ERROR'}, "No link collections found in scene")
+            show_message_box(
+                message="No link collections found in scene.\n\nPlease:\n• Run 'Auto-Generate Links' first, OR\n• Create link collections manually\n\nCheck 'Link Validation Log' for details.",
+                title="No Links Found",
+                icon="ERROR"
+            )
+            return {'CANCELLED'}
+
+        logger.info(f"Found {len(existing_links['links'])} existing links to validate")
+
+        # Extract scene data
+        logger.info("")
+        logger.section("EXTRACTING SCENE DATA")
+        self.report({'INFO'}, "Extracting scene data...")
+        scene_data = extract_model_data()
+
+        if not scene_data["objects"]:
+            logger.error("No objects found in scene")
+            logger.show_in_editor()
+            self.report({'ERROR'}, "No objects found in scene")
+            return {'CANCELLED'}
+
+        # Capture and analyze with vision (optional for validation)
+        logger.info("")
+        logger.section("VISUAL ANALYSIS (OPTIONAL)")
+        self.report({'INFO'}, "Attempting visual analysis...")
+
+        vision_analysis = None
+        try:
+            # Check Azure OpenAI connection
+            client = get_azure_client()
+            if client:
+                image_paths = capture_viewport_images(dynamic_angles=True)
+
+                if image_paths and len(image_paths) > 0:
+                    vision_success, vision_result, _ = analyze_images_with_ai(image_paths)
+                    if vision_success:
+                        vision_analysis = vision_result
+                        logger.info("Visual analysis successful - will enhance validation")
+                    else:
+                        logger.warning("Visual analysis failed - will validate without visual context")
+                else:
+                    logger.warning("Could not capture images - will validate without visual context")
+            else:
+                logger.warning("Azure OpenAI not connected - will validate without visual context")
+        except Exception as e:
+            logger.warning(f"Visual analysis error: {str(e)} - continuing without visual context")
+
+        # If no vision analysis, create a placeholder
+        if not vision_analysis:
+            vision_analysis = "Visual analysis not available - validation based on structure only"
+            logger.info("Proceeding with structure-only validation")
+
+        # Run validation
+        logger.info("")
+        logger.section("RUNNING COMPREHENSIVE VALIDATION")
+        self.report({'INFO'}, "Validating link structure...")
+
+        is_valid, validation_report, validated_result = validate_link_suggestions(
+            existing_links, scene_data, vision_analysis
+        )
+
+        # Show results
+        logger.info("")
+        logger.info("=" * 80)
+        if is_valid:
+            logger.info("VALIDATION COMPLETED - LINKS ARE VALID ✅")
+        else:
+            logger.info("VALIDATION COMPLETED - ISSUES FOUND ❌")
+        logger.info("=" * 80)
+
+        # Show log in text editor
+        logger.show_in_editor()
+
+        # Prepare user message
+        if is_valid:
+            self.report({'INFO'}, "Validation passed - links are valid")
+            message = "✅ Validation PASSED!\n\n"
+            message += f"Validated {len(existing_links['links'])} links.\n"
+            message += "No critical issues found.\n\n"
+            message += "📄 Full validation report in 'Link Validation Log' text"
+            icon = "INFO"
+        else:
+            self.report({'WARNING'}, "Validation found issues")
+            message = "⚠️ Validation found issues!\n\n"
+            message += f"Validated {len(existing_links['links'])} links.\n"
+            message += "Critical issues detected.\n\n"
+            message += "📄 Check 'Link Validation Log' for details"
+            icon = "ERROR"
+
+        show_message_box(
+            message=message,
+            title="Link Validation Results",
+            icon=icon
+        )
+
+        # Refresh UI
+        context.area.tag_redraw()
+
+        return {'FINISHED'}
+
+
 class SDFG_OT_AnalyzeSceneOnly(bpy.types.Operator):
     """Analyze scene with AI without creating links (preview mode)"""
 
@@ -1403,11 +2529,11 @@ class SDFG_OT_AnalyzeSceneOnly(bpy.types.Operator):
             self.report({'ERROR'}, "Azure OpenAI not connected. Check UTILITIES tab.")
             return {'CANCELLED'}
 
-        # Capture and analyze images (REQUIRED)
-        logger.section("VISUAL CAPTURE & ANALYSIS")
-        self.report({'INFO'}, "Capturing viewport images...")
+        # Capture and analyze images with dynamic angles (REQUIRED)
+        logger.section("DYNAMIC VISUAL CAPTURE & ANALYSIS")
+        self.report({'INFO'}, "Capturing viewport images with AI-optimized angles...")
 
-        image_paths = capture_viewport_images(num_angles=3)
+        image_paths = capture_viewport_images(dynamic_angles=True)
 
         if not image_paths or len(image_paths) == 0:
             logger.error("Failed to capture viewport images")
@@ -1422,7 +2548,7 @@ class SDFG_OT_AnalyzeSceneOnly(bpy.types.Operator):
             return {'CANCELLED'}
 
         self.report({'INFO'}, "Analyzing images with AI...")
-        vision_success, vision_result = analyze_images_with_ai(image_paths)
+        vision_success, vision_result, _ = analyze_images_with_ai(image_paths)
 
         if not vision_success:
             logger.error(f"Visual analysis failed: {vision_result}")
