@@ -227,12 +227,10 @@ Elevation: -45 to 45° (negative=below, positive=above)
         return [(90, 0), (180, 0), (270, 30)]
 
 
-def capture_viewport_images(dynamic_angles=True):
+def capture_viewport_images():
     """
-    Capture viewport images from optimal angles around the scene using safe camera-based rendering.
-
-    Args:
-        dynamic_angles (bool): If True, AI determines optimal angles based on first image
+    Capture viewport images from fixed comprehensive angles around the scene using safe camera-based rendering.
+    Uses fixed angles to avoid unnecessary AI API calls and captures orthographic views + diagonals.
 
     Returns:
         list: List of file paths to the captured images
@@ -243,7 +241,7 @@ def capture_viewport_images(dynamic_angles=True):
     import math
 
     if logger:
-        logger.info(f"Capturing viewport images with {'dynamic' if dynamic_angles else 'fixed'} angles...")
+        logger.info("Capturing viewport images from fixed comprehensive angles...")
 
     image_paths = []
     temp_dir = tempfile.gettempdir()
@@ -303,64 +301,50 @@ def capture_viewport_images(dynamic_angles=True):
         bpy.context.scene.collection.objects.link(temp_camera)
         bpy.context.scene.camera = temp_camera
 
-        # Set render settings for capture
-        bpy.context.scene.render.resolution_x = 1024  # Reasonable size
-        bpy.context.scene.render.resolution_y = 1024
+        # Set render settings for capture - REDUCED RESOLUTION to save tokens
+        bpy.context.scene.render.resolution_x = 512  # Reduced from 1024
+        bpy.context.scene.render.resolution_y = 512  # Reduced from 1024
         bpy.context.scene.render.image_settings.file_format = 'PNG'
 
-        scene_bounds = {"center": center, "size": size}
+        # Define fixed comprehensive angles
+        # Format: (name, azimuth, elevation)
+        # Azimuth: 0=front, 90=right, 180=back, 270=left
+        # Elevation: 0=level, positive=above, negative=below
+        fixed_angles = [
+            ("front", 0, 0),           # Front view
+            ("right", 90, 0),          # Right side view
+            ("back", 180, 0),          # Back view
+            ("left", 270, 0),          # Left side view
+            ("top", 0, 90),            # Top view (looking down)
+            ("bottom", 0, -90),        # Bottom view (looking up)
+            ("front_top", 45, 30),     # Diagonal: front-top
+            ("right_top", 135, 30),    # Diagonal: right-top
+            ("back_top", 225, 30),     # Diagonal: back-top
+            ("left_top", 315, 30),     # Diagonal: left-top
+        ]
 
-        # STEP 1: Capture initial/reference image (front view)
         if logger:
-            logger.info("  Step 1: Capturing initial reference image (front view)...")
+            logger.info(f"  Capturing {len(fixed_angles)} comprehensive views...")
 
         cam_distance = size * 2.0
-        temp_camera.location = Vector((center.x, center.y - cam_distance, center.z + size * 0.3))
-        direction = center - temp_camera.location
-        rot_quat = direction.to_track_quat('-Z', 'Y')
-        temp_camera.rotation_euler = rot_quat.to_euler()
 
-        # Update viewport to show the angle (visual feedback for user)
-        update_viewport_to_camera()
-
-        initial_image_path = os.path.join(temp_dir, "blender_view_initial.png")
-        bpy.context.scene.render.filepath = initial_image_path
-        bpy.ops.render.opengl(write_still=True)
-
-        if os.path.exists(initial_image_path):
-            image_paths.append(initial_image_path)
-            if logger:
-                logger.info(f"    ✓ Initial image captured")
-        else:
-            raise Exception("Failed to capture initial image")
-
-        # STEP 2: Determine optimal angles based on initial image
-        if dynamic_angles:
-            if logger:
-                logger.info("  Step 2: AI analyzing initial image for optimal angles...")
-
-            angles_to_capture = get_optimal_viewing_angles(initial_image_path, scene_bounds)
-        else:
-            # Fixed angles fallback
-            angles_to_capture = [(90, 0), (180, 0), (270, 30)]
-            if logger:
-                logger.info("  Step 2: Using fixed angle set")
-
-        # STEP 3: Capture additional angles
-        if logger:
-            logger.info(f"  Step 3: Capturing {len(angles_to_capture)} additional angles...")
-
-        for i, (azimuth, elevation) in enumerate(angles_to_capture):
+        for i, (view_name, azimuth, elevation) in enumerate(fixed_angles):
             try:
                 # Convert angles to radians
                 azimuth_rad = math.radians(azimuth)
                 elevation_rad = math.radians(elevation)
 
                 # Position camera
-                horizontal_dist = cam_distance * math.cos(elevation_rad)
-                cam_x = center.x + horizontal_dist * math.sin(azimuth_rad)
-                cam_y = center.y + horizontal_dist * math.cos(azimuth_rad)
-                cam_z = center.z + cam_distance * math.sin(elevation_rad)
+                if abs(elevation) == 90:
+                    # Top/bottom views: position directly above/below
+                    cam_x = center.x
+                    cam_y = center.y
+                    cam_z = center.z + (cam_distance if elevation > 0 else -cam_distance)
+                else:
+                    horizontal_dist = cam_distance * math.cos(elevation_rad)
+                    cam_x = center.x + horizontal_dist * math.sin(azimuth_rad)
+                    cam_y = center.y + horizontal_dist * math.cos(azimuth_rad)
+                    cam_z = center.z + cam_distance * math.sin(elevation_rad)
 
                 temp_camera.location = Vector((cam_x, cam_y, cam_z))
 
@@ -373,25 +357,25 @@ def capture_viewport_images(dynamic_angles=True):
                 update_viewport_to_camera()
 
                 # Render image
-                image_path = os.path.join(temp_dir, f"blender_view_angle_{i+1}.png")
+                image_path = os.path.join(temp_dir, f"blender_view_{view_name}.png")
                 bpy.context.scene.render.filepath = image_path
                 bpy.ops.render.opengl(write_still=True)
 
                 if os.path.exists(image_path):
                     image_paths.append(image_path)
                     if logger:
-                        logger.info(f"    ✓ Angle {i+1}: Azimuth {azimuth}°, Elevation {elevation}°")
+                        logger.info(f"    ✓ {view_name.replace('_', ' ').title()}: Azimuth {azimuth}°, Elevation {elevation}°")
                 else:
                     if logger:
-                        logger.warning(f"    ✗ Failed to create image for angle {i+1}")
+                        logger.warning(f"    ✗ Failed to create {view_name} view")
 
             except Exception as e:
                 if logger:
-                    logger.warning(f"    ✗ Error capturing angle {i+1}: {str(e)}")
+                    logger.warning(f"    ✗ Error capturing {view_name} view: {str(e)}")
                 continue
 
         if logger:
-            logger.info(f"Successfully captured {len(image_paths)} images")
+            logger.info(f"Successfully captured {len(image_paths)} images at 512x512 resolution")
 
         return image_paths
 
@@ -423,13 +407,15 @@ def capture_viewport_images(dynamic_angles=True):
                 logger.warning(f"Cleanup warning: {str(cleanup_error)}")
 
 
-def resize_image_for_ai(image_path, target_size=(512, 512)):
+def resize_image_for_ai(image_path, target_size=(384, 384), show_warning=True):
     """
     Resize image to reduce tokens before sending to AI.
+    Further reduces already-captured 512x512 images to 384x384 for token efficiency.
 
     Args:
         image_path (str): Path to image file
         target_size (tuple): Target (width, height) in pixels
+        show_warning (bool): Whether to show PIL missing warning (only once)
 
     Returns:
         str: Path to resized image, or original if resize fails
@@ -440,9 +426,9 @@ def resize_image_for_ai(image_path, target_size=(512, 512)):
     try:
         from PIL import Image
     except ImportError:
-        if logger:
-            logger.warning("PIL/Pillow not available - using original image size")
-            logger.warning("To reduce token usage, install Pillow: pip install Pillow")
+        if logger and show_warning:
+            logger.warning("PIL/Pillow not available - using original image size (512x512)")
+            logger.warning("To reduce token usage, run install_pillow.py from Blender's Scripting workspace")
         return image_path
 
     try:
@@ -573,9 +559,9 @@ def analyze_images_with_ai(image_paths, cleanup_images=True, show_preview=True):
 
         encoded_images = []
         resized_paths = []
-        TARGET_SIZE = (512, 512)  # Reduced from 1024x1024 to save tokens
+        TARGET_SIZE = (384, 384)  # Further reduced to 384x384 to save tokens
 
-        for img_path in image_paths:
+        for idx, img_path in enumerate(image_paths):
             try:
                 # Check if file exists
                 if not os.path.exists(img_path):
@@ -585,8 +571,8 @@ def analyze_images_with_ai(image_paths, cleanup_images=True, show_preview=True):
 
                 original_size_mb = os.path.getsize(img_path) / (1024 * 1024)
 
-                # Resize image to reduce tokens
-                resized_path = resize_image_for_ai(img_path, TARGET_SIZE)
+                # Resize image to reduce tokens (only show warning for first image)
+                resized_path = resize_image_for_ai(img_path, TARGET_SIZE, show_warning=(idx == 0))
                 resized_paths.append(resized_path)
 
                 resized_size_mb = os.path.getsize(resized_path) / (1024 * 1024)
@@ -614,37 +600,48 @@ def analyze_images_with_ai(image_paths, cleanup_images=True, show_preview=True):
         # Create vision analysis prompt
         vision_prompt = """You are an expert in robotic kinematics, mechanical engineering, and CAD analysis.
 
-You are viewing multiple angles of a 3D mechanical model/robot. Your task is to:
+You are viewing multiple angles (front, back, left, right, top, bottom, and diagonal views) of a 3D mechanical model/robot. Your task is to analyze the spatial and physical structure based on visual geometry.
 
-1. **Identify the mechanical structure:**
-   - What type of mechanism is this? (robotic arm, gripper, wheeled robot, articulated mechanism, etc.)
-   - How many distinct rigid bodies (links) do you see?
-   - Where are the joints/connection points between moving parts?
-
-2. **Analyze kinematic structure:**
-   - Which parts move independently from each other?
-   - Which parts are rigidly connected (move together as one link)?
-   - What types of joints connect the parts? (revolute/hinge, prismatic/slider, fixed, etc.)
-
-3. **Provide link grouping strategy:**
-   - Based on VISUAL INSPECTION ONLY, suggest how objects should be grouped into links
-   - Identify the base/fixed link (usually the largest stationary part)
-   - Identify moving links and their hierarchy (parent-child relationships)
-   - Note any symmetric structures (left/right arms, multiple wheels, etc.)
-
-4. **Domain knowledge validation:**
-   - Does this structure follow standard robotic conventions?
-   - Are there any unusual configurations that need special attention?
-   - What potential issues might arise in link generation?
+ANALYSIS TASKS:
+1. Identify the BASE (fixed/stationary structure) - usually the largest grounded component
+2. Identify MOVING COMPONENTS that move independently from each other
+3. Identify JOINTS (hinges, sliders) that separate moving parts
+4. Determine what type of mechanism this is (robotic arm, gripper, wheeled robot, forklift, etc.)
+5. Group components into links where:
+   - ONE link = base (stationary)
+   - ONE link = each independently moving component or assembly
+   - Parts that move TOGETHER as a unit = SAME link
+   - Symmetric parts (left/right wheels) = separate links if they move independently
 
 IMPORTANT GUIDELINES:
-- Each RIGID BODY should be a separate link
-- Parts connected by joints should be DIFFERENT links
-- Parts that move together should be in the SAME link
-- Most mechanisms have 3+ separate links minimum
-- Look for visual clues: gaps between parts indicate joints, connected/welded parts indicate same link
+- Most mechanisms have 2-4 links total (base + 1-3 moving parts)
+- Visible gaps or joints between parts indicate different links
+- Components rigidly connected belong to the same link
+- Focus on FUNCTIONAL movement, not individual component boundaries
 
-Provide a detailed visual analysis focusing on the mechanical structure and how it should be divided into links for SDF export."""
+Respond ONLY with valid JSON in this exact format:
+{
+  "model_description": "One sentence describing what this mechanism is (e.g., 'A four-wheeled forklift robot with articulated mast assembly')",
+  "links": [
+    {
+      "link_name": "descriptive_name_link",
+      "function": "brief description of what this link does",
+      "components_description": "what visual components belong to this link",
+      "joint_type": "revolute|prismatic|fixed|none (for base)"
+    }
+  ]
+}
+
+Example for a simple forklift:
+{
+  "model_description": "A wheeled forklift robot with independently rotating rear wheels and a vertical lifting mast",
+  "links": [
+    {"link_name": "base_link", "function": "stationary chassis and body", "components_description": "main chassis, frame, and fixed structural elements", "joint_type": "none"},
+    {"link_name": "rear_left_wheel_link", "function": "left rear wheel rotation", "components_description": "cylindrical wheel on left rear", "joint_type": "revolute"},
+    {"link_name": "rear_right_wheel_link", "function": "right rear wheel rotation", "components_description": "cylindrical wheel on right rear", "joint_type": "revolute"},
+    {"link_name": "mast_assembly_link", "function": "vertical lifting mechanism", "components_description": "vertical rails and lifting carriage", "joint_type": "prismatic"}
+  ]
+}"""
 
         # Create message content with images
         message_content = [{"type": "text", "text": vision_prompt}]
@@ -719,8 +716,35 @@ Provide a detailed visual analysis focusing on the mechanical structure and how 
                 logger.info("")
                 logger.info("VISION ANALYSIS RESULT:")
                 logger.separator("-", 60)
-                for line in analysis.split('\n'):
-                    logger.text_block.write(line + "\n")
+
+                # Try to parse and display structured JSON
+                try:
+                    # Extract JSON from markdown code blocks if present
+                    analysis_text = analysis
+                    if "```json" in analysis_text:
+                        analysis_text = analysis_text.split("```json")[1].split("```")[0].strip()
+                    elif "```" in analysis_text:
+                        analysis_text = analysis_text.split("```")[1].split("```")[0].strip()
+
+                    vision_json = json.loads(analysis_text)
+
+                    # Log structured output
+                    logger.info(f"Model: {vision_json.get('model_description', 'N/A')}")
+                    logger.info(f"Total Links: {len(vision_json.get('links', []))}")
+                    logger.info("")
+
+                    for idx, link in enumerate(vision_json.get('links', []), 1):
+                        logger.info(f"Link {idx}: {link.get('link_name', 'unnamed')}")
+                        logger.info(f"  Function: {link.get('function', 'N/A')}")
+                        logger.info(f"  Components: {link.get('components_description', 'N/A')}")
+                        logger.info(f"  Joint Type: {link.get('joint_type', 'N/A')}")
+                        logger.info("")
+
+                except (json.JSONDecodeError, KeyError):
+                    # Fallback to raw text display
+                    for line in analysis.split('\n'):
+                        logger.text_block.write(line + "\n")
+
                 logger.separator("-", 60)
 
             # Cleanup temporary images if requested
@@ -781,6 +805,225 @@ def cleanup_temp_images(image_paths):
         logger.info(f"Cleaned up {cleaned} temporary image files")
 
 
+def analyze_spatial_relationships(scene_data):
+    """
+    Analyze spatial relationships between objects to identify functional groups.
+    Uses proximity, geometric features, and symmetry to suggest intelligent groupings.
+
+    Args:
+        scene_data (dict): Scene data with object information
+
+    Returns:
+        dict: Spatial clusters and geometric feature analysis
+    """
+    global logger
+    import numpy as np
+    from mathutils import Vector
+
+    objects = scene_data.get("objects", [])
+    if not objects:
+        return {"clusters": [], "geometric_features": {}}
+
+    # Get actual Blender objects for geometric analysis
+    blender_objects = {}
+    for obj_data in objects:
+        obj = bpy.data.objects.get(obj_data["name"])
+        if obj and obj.type == 'MESH':
+            blender_objects[obj_data["name"]] = obj
+
+    if logger:
+        logger.info(f"Analyzing spatial relationships for {len(blender_objects)} mesh objects...")
+
+    # 1. Geometric Feature Detection
+    geometric_features = {}
+    for obj_name, obj in blender_objects.items():
+        features = analyze_object_geometry(obj)
+        geometric_features[obj_name] = features
+
+    # 2. Spatial Clustering by proximity
+    clusters = perform_spatial_clustering(objects, blender_objects)
+
+    # 3. Identify symmetry pairs (left/right assemblies)
+    symmetry_pairs = identify_symmetry_pairs(objects, blender_objects)
+
+    if logger:
+        logger.info(f"Identified {len(clusters)} spatial clusters")
+        logger.info(f"Identified {len(symmetry_pairs)} symmetry pairs")
+
+    return {
+        "clusters": clusters,
+        "geometric_features": geometric_features,
+        "symmetry_pairs": symmetry_pairs
+    }
+
+
+def analyze_object_geometry(obj):
+    """
+    Analyze geometric features of a mesh object to determine its likely function.
+
+    Args:
+        obj: Blender mesh object
+
+    Returns:
+        dict: Geometric feature classification
+    """
+    if not obj or obj.type != 'MESH' or not obj.data.vertices:
+        return {"shape": "unknown", "aspect_ratio": 0, "size_category": "unknown"}
+
+    dims = obj.dimensions
+    max_dim = max(dims)
+    min_dim = min([d for d in dims if d > 0.001]) if any(d > 0.001 for d in dims) else 0.001
+
+    # Calculate aspect ratios
+    aspect_ratio = max_dim / min_dim if min_dim > 0 else 1
+
+    # Determine shape category
+    shape = "unknown"
+    if dims[0] > 0.001 and dims[1] > 0.001 and dims[2] > 0.001:
+        # Check for cylindrical (wheel-like) objects
+        sorted_dims = sorted(dims)
+        if sorted_dims[0] / sorted_dims[1] < 0.3 and abs(sorted_dims[1] - sorted_dims[2]) / sorted_dims[2] < 0.2:
+            shape = "cylindrical"  # Likely a wheel or hub
+        # Check for elongated (beam/rail-like) objects
+        elif aspect_ratio > 5:
+            shape = "elongated"  # Likely a rail, beam, or fork tine
+        # Check for flat (plate-like) objects
+        elif sorted_dims[0] / sorted_dims[2] < 0.2:
+            shape = "flat"  # Likely a plate or panel
+        # Box-like
+        elif aspect_ratio < 3:
+            shape = "box"  # Likely chassis or structural component
+
+    # Size categorization
+    volume = dims[0] * dims[1] * dims[2]
+    if volume > 1.0:
+        size_category = "large"
+    elif volume > 0.1:
+        size_category = "medium"
+    else:
+        size_category = "small"
+
+    return {
+        "shape": shape,
+        "aspect_ratio": float(aspect_ratio),
+        "size_category": size_category,
+        "dimensions": [float(d) for d in dims],
+        "volume": float(volume)
+    }
+
+
+def perform_spatial_clustering(objects, blender_objects):
+    """
+    Group objects by spatial proximity to identify assemblies.
+
+    Args:
+        objects (list): Object data from scene
+        blender_objects (dict): Actual Blender objects
+
+    Returns:
+        list: Spatial clusters with object groups
+    """
+    from mathutils import Vector
+    import numpy as np
+
+    if not objects:
+        return []
+
+    # Build position matrix
+    positions = []
+    obj_names = []
+
+    for obj_data in objects:
+        obj = blender_objects.get(obj_data["name"])
+        if obj:
+            # Use world-space location
+            world_loc = obj.matrix_world.translation
+            positions.append([world_loc.x, world_loc.y, world_loc.z])
+            obj_names.append(obj_data["name"])
+
+    if len(positions) < 2:
+        return []
+
+    positions = np.array(positions)
+
+    # Simple clustering based on distance threshold
+    clusters = []
+    visited = set()
+    distance_threshold = 2.0  # Adjust based on model scale
+
+    for i, obj_name in enumerate(obj_names):
+        if obj_name in visited:
+            continue
+
+        # Start new cluster
+        cluster = {"objects": [obj_name], "center": positions[i].tolist()}
+        visited.add(obj_name)
+
+        # Find nearby objects
+        for j, other_name in enumerate(obj_names):
+            if other_name in visited:
+                continue
+
+            distance = np.linalg.norm(positions[i] - positions[j])
+            if distance < distance_threshold:
+                cluster["objects"].append(other_name)
+                visited.add(other_name)
+
+        if len(cluster["objects"]) > 1:  # Only include multi-object clusters
+            clusters.append(cluster)
+
+    return clusters
+
+
+def identify_symmetry_pairs(objects, blender_objects):
+    """
+    Identify symmetric pairs of objects (e.g., left/right wheels).
+
+    Args:
+        objects (list): Object data from scene
+        blender_objects (dict): Actual Blender objects
+
+    Returns:
+        list: Pairs of symmetric objects
+    """
+    from mathutils import Vector
+
+    pairs = []
+    checked = set()
+
+    for obj1_data in objects:
+        obj1 = blender_objects.get(obj1_data["name"])
+        if not obj1 or obj1.name in checked:
+            continue
+
+        pos1 = obj1.matrix_world.translation
+
+        # Look for symmetric counterpart
+        for obj2_data in objects:
+            obj2 = blender_objects.get(obj2_data["name"])
+            if not obj2 or obj2.name in checked or obj1.name == obj2.name:
+                continue
+
+            pos2 = obj2.matrix_world.translation
+
+            # Check for symmetry across Y or X axis
+            # Objects at similar Z and one axis, but opposite on another axis
+            if (abs(pos1.z - pos2.z) < 0.5 and  # Similar height
+                abs(pos1.y - pos2.y) < 0.5 and  # Similar depth
+                abs(abs(pos1.x) - abs(pos2.x)) < 0.5 and  # Similar distance from center
+                pos1.x * pos2.x < 0):  # Opposite sides
+
+                pairs.append({
+                    "left": obj1.name if pos1.x < pos2.x else obj2.name,
+                    "right": obj2.name if pos1.x < pos2.x else obj1.name
+                })
+                checked.add(obj1.name)
+                checked.add(obj2.name)
+                break
+
+    return pairs
+
+
 def extract_model_data():
     """
     Extract comprehensive model data from the current Blender scene.
@@ -806,10 +1049,26 @@ def extract_model_data():
     # Extract object information
     for obj in bpy.context.scene.objects:
         if obj.type in ['MESH', 'EMPTY', 'ARMATURE']:
+            # Get world-space location (actual position in 3D space)
+            world_location = obj.matrix_world.translation
+
+            # Calculate bounding box center in world space for mesh objects
+            bbox_center = None
+            if obj.type == 'MESH' and obj.data.vertices:
+                try:
+                    bbox_corners = [obj.matrix_world @ Vector(corner) for corner in obj.bound_box]
+                    bbox_center = sum(bbox_corners, Vector((0,0,0))) / len(bbox_corners)
+                except:
+                    bbox_center = world_location
+            else:
+                bbox_center = world_location
+
             obj_data = {
                 "name": obj.name,
                 "type": obj.type,
-                "location": list(obj.location),
+                "location": list(obj.location),  # Local location (for reference)
+                "world_location": [world_location.x, world_location.y, world_location.z],  # Actual position
+                "bbox_center": [bbox_center.x, bbox_center.y, bbox_center.z] if bbox_center else list(world_location),  # Geometry center
                 "rotation": list(obj.rotation_euler),
                 "scale": list(obj.scale),
                 "parent": obj.parent.name if obj.parent else None,
@@ -870,10 +1129,17 @@ def extract_model_data():
 
             scene_data["collections"].append(col_data)
 
+    # Add spatial clustering and geometric analysis
+    spatial_analysis = analyze_spatial_relationships(scene_data)
+    scene_data["spatial_clusters"] = spatial_analysis["clusters"]
+    scene_data["geometric_features"] = spatial_analysis["geometric_features"]
+    scene_data["symmetry_pairs"] = spatial_analysis.get("symmetry_pairs", [])
+
     if logger:
         logger.info(f"Extracted {len(scene_data['objects'])} objects")
         logger.info(f"Extracted {len(scene_data['hierarchy'])} hierarchy relationships")
         logger.info(f"Extracted {len(scene_data['collections'])} collections")
+        logger.info(f"Identified {len(scene_data['spatial_clusters'])} spatial clusters")
         logger.info("")
         logger.info("Full scene data (JSON):")
         logger.separator("-", 60)
@@ -902,7 +1168,9 @@ def format_data_for_ai(scene_data):
         formatted += f"  Type: {obj['type']}\n"
         formatted += f"  Parent: {obj['parent']}\n"
         formatted += f"  Children: {', '.join(obj['children']) if obj['children'] else 'None'}\n"
-        formatted += f"  Location: ({obj['location'][0]:.3f}, {obj['location'][1]:.3f}, {obj['location'][2]:.3f})\n"
+        formatted += f"  World Location: ({obj['world_location'][0]:.3f}, {obj['world_location'][1]:.3f}, {obj['world_location'][2]:.3f})\n"
+        formatted += f"  Geometry Center: ({obj['bbox_center'][0]:.3f}, {obj['bbox_center'][1]:.3f}, {obj['bbox_center'][2]:.3f})\n"
+        formatted += f"  Dimensions: ({obj['dimensions'][0]:.3f}, {obj['dimensions'][1]:.3f}, {obj['dimensions'][2]:.3f})\n"
         formatted += f"  Collections: {', '.join(obj['collections'])}\n"
 
         if 'rigid_body' in obj:
@@ -922,7 +1190,52 @@ def format_data_for_ai(scene_data):
         formatted += f"  Objects: {', '.join(col['objects']) if col['objects'] else 'Empty'}\n"
         formatted += f"  Parent: {col['parent']}\n"
 
+    # Add spatial clustering information
+    formatted += "\n=== SPATIAL CLUSTERS (Objects Grouped by Proximity) ===\n"
+    if scene_data.get('spatial_clusters'):
+        for idx, cluster in enumerate(scene_data['spatial_clusters']):
+            formatted += f"\nCluster {idx + 1} (near {cluster['center']}):\n"
+            formatted += f"  Objects: {', '.join(cluster['objects'])}\n"
+    else:
+        formatted += "No spatial clusters identified\n"
+
+    # Add geometric features
+    formatted += "\n=== GEOMETRIC FEATURES (Shape Analysis) ===\n"
+    if scene_data.get('geometric_features'):
+        shape_groups = {"cylindrical": [], "elongated": [], "flat": [], "box": [], "unknown": []}
+
+        for obj_name, features in scene_data['geometric_features'].items():
+            shape = features.get('shape', 'unknown')
+            shape_groups[shape].append(obj_name)
+
+        for shape, objects in shape_groups.items():
+            if objects:
+                formatted += f"\n{shape.upper()} objects (likely {get_shape_hint(shape)}):\n"
+                formatted += f"  {', '.join(objects)}\n"
+    else:
+        formatted += "No geometric analysis available\n"
+
+    # Add symmetry pairs
+    formatted += "\n=== SYMMETRY PAIRS (Left/Right Assemblies) ===\n"
+    if scene_data.get('symmetry_pairs'):
+        for pair in scene_data['symmetry_pairs']:
+            formatted += f"  Left: {pair['left']} <-> Right: {pair['right']}\n"
+    else:
+        formatted += "No symmetry pairs identified\n"
+
     return formatted
+
+
+def get_shape_hint(shape):
+    """Provide functional hints based on geometric shape."""
+    hints = {
+        "cylindrical": "wheels, hubs, axles",
+        "elongated": "rails, beams, fork tines, mast columns",
+        "flat": "plates, panels, chassis bases",
+        "box": "chassis, body, structural blocks",
+        "unknown": "complex geometry"
+    }
+    return hints.get(shape, "unknown function")
 
 
 def create_ai_prompt(formatted_data, vision_analysis):
@@ -950,61 +1263,82 @@ take precedence over naming conventions in the scene data below.
     prompt = f"""You are an expert in robotic kinematics and SDF (Simulation Description Format) file generation.
 Your task is to analyze a Blender scene and group objects into "links" for a robot/mechanism model.
 
-CONTEXT:
-- A "link" is a rigid body part of a mechanism (like an arm segment, wheel, chassis, etc.)
-- Objects that move together as one rigid unit should be in the same link
+LINK DEFINITION:
+- A "link" represents a rigid body in the kinematic chain
+- Create links ONLY for: (1) the BASE (stationary), and (2) MOVING COMPONENTS
+- Objects that move together as one unit belong to the SAME link
 - Links are connected by joints (revolute, prismatic, fixed, etc.)
-- Each link should have a descriptive name based on its function or position
 
 {vision_context}
 
-IMPORTANT RULES:
-1. **DO NOT put all objects into a single link** - analyze the structure carefully
-2. **Separate moving parts** - Different moving parts should be different links
-3. **Look for joints** - Objects separated by joints should be in different links
-4. **Parent-child relationships** often indicate separate links connected by joints
-5. **Create multiple links** - Most mechanisms have 3+ separate links minimum
-6. **Use visual analysis** - If provided, visual analysis should guide your grouping decisions
+LINKING STRATEGY:
+1. Identify the BASE: Create ONE base_link containing all stationary/fixed components
+2. Identify MOVING PARTS: Create ONE link for each independently moving component or assembly
+3. Group rigidly: Components that move together (no relative motion) belong to the SAME link
+4. Focus on function: Links represent functional moving parts, not individual CAD components
 
-ANALYSIS GUIDELINES:
-1. **Object Names**: Look for keywords like "base", "arm", "link", "joint", "wheel", "chassis", "gripper"
-2. **Hierarchy**: Parent-child relationships usually mean separate links with a joint between them
-3. **Constraints**: Objects with CHILD_OF or similar constraints are likely separate links
-4. **Naming Patterns**:
-   - Objects with numbers (arm_1, arm_2) are usually separate links
-   - Objects with position names (left, right, upper, lower) are usually separate links
-   - Objects with "joint" in the name are connection points between links
+ANALYSIS PRIORITY (in order):
+1. Visual Structure & Position: Use the visual analysis to identify what moves independently
+2. Spatial Clusters: Objects in the same spatial cluster are physically close and likely part of the same assembly
+3. Geometric Features: Use shape analysis to identify functional components:
+   - CYLINDRICAL objects → likely wheels, hubs, or axles (separate moving links)
+   - ELONGATED objects → likely rails, beams, or fork tines (group by function)
+   - FLAT/BOX objects → likely chassis, body, or structural base (typically base_link)
+4. Symmetry Pairs: Left/right symmetric objects (e.g., wheels) should be separate links
+5. Domain Knowledge: Apply robotics/mechanical engineering principles about kinematic chains
+6. Hierarchy & Constraints: Parent-child relationships indicate kinematic connections
+7. Object Names: Use as LAST RESORT - do NOT group by sequential numbering!
+
+CRITICAL: DO NOT assign objects to links based on sequential object names (e.g., Forklift_b.001-015).
+Instead, use SPATIAL CLUSTERS, GEOMETRIC FEATURES, and SYMMETRY PAIRS to intelligently categorize.
 
 SCENE DATA:
 {formatted_data}
 
 TASK:
-Analyze this scene and suggest link groupings. Create MULTIPLE separate links based on the structure.
-If visual analysis is provided above, use it as the PRIMARY guide for link separation.
+Create a minimal, functional link structure. Most mechanisms need only 2-4 links total.
 
-Examples of good link separation:
-- For a robotic arm: base_link, shoulder_link, upper_arm_link, forearm_link, wrist_link, gripper_link
-- For a wheeled robot: chassis_link, wheel_left_link, wheel_right_link
-- For a gripper: palm_link, finger_left_link, finger_right_link
+HOW TO USE SPATIAL AND GEOMETRIC DATA:
+1. Start with SPATIAL CLUSTERS - objects physically near each other likely form assemblies
+2. Use GEOMETRIC FEATURES to identify function:
+   - Group all CYLINDRICAL objects at similar positions → wheel assembly
+   - Group ELONGATED vertical objects → mast assembly
+   - Group large BOX/FLAT objects → chassis/base
+3. Use SYMMETRY PAIRS to separate left/right moving parts
+4. Cross-reference with VISUAL ANALYSIS for confirmation
+
+Example Process for a Forklift:
+- See CYLINDRICAL objects in Cluster 1 at left side → rear_left_wheel_link
+- See CYLINDRICAL objects in Cluster 2 at right side (symmetry pair) → rear_right_wheel_link
+- See ELONGATED vertical objects in Cluster 3 → mast_assembly_link
+- See large BOX objects spread across middle → chassis_link (base)
+- See small CYLINDRICAL objects in Cluster 4 at front → front_caster_link
+
+General Examples:
+- Simple gripper: base_link (stationary body), gripper_link (moving fingers as one unit)
+- Robotic arm (2-joint): base_link, upper_arm_link, forearm_link
+- Wheeled robot: chassis_link (base), wheel_left_link, wheel_right_link
+- Articulated mechanism: base_link, rotating_platform_link, actuator_link
 
 Respond ONLY with valid JSON in this exact format:
 {{
   "links": [
     {{
       "name": "link_name",
-      "objects": ["object1", "object2"],
-      "reasoning": "why these specific objects form this link"
+      "objects": ["object1", "object2", ...],
+      "reasoning": "why these objects move together as one functional unit"
     }}
   ],
   "suggestions": "observations about the kinematic structure"
 }}
 
-CRITICAL:
-- Create SEPARATE links for each movable component
-- If you see parent-child relationships, create separate links for parent and child
-- DO NOT group the entire model into one "base_link"
-- Aim for at least 3-5 links for a typical mechanism
+CRITICAL RULES:
+- Create ONE link for the base (all stationary parts)
+- Create ONE link per independently moving component/assembly
+- Components with no relative motion between them = SAME link
+- Most mechanisms have 2-4 links total, not 10+
 - Every object should be assigned to exactly one link
+- Focus on MOVEMENT and FUNCTION, not component boundaries
 """
 
     return prompt
@@ -1269,10 +1603,12 @@ def validate_link_suggestions(ai_result, scene_data, vision_analysis):
         if len(links) < 1:
             validation_issues.append("❌ ERROR: No links were generated")
         elif len(links) == 1:
-            warnings.append("⚠️  WARNING: Only 1 link generated - most mechanisms need multiple links")
+            warnings.append("⚠️  WARNING: Only 1 link generated - need at least base + moving components")
+        elif len(links) > 10:
+            warnings.append(f"⚠️  WARNING: {len(links)} links generated - seems like over-segmentation (most mechanisms have 2-4 links)")
         else:
             if logger:
-                logger.info(f"    ✓ {len(links)} links generated")
+                logger.info(f"    ✓ {len(links)} links generated (reasonable for most mechanisms)")
 
         # Check 1.3: All objects assigned
         if logger:
@@ -1373,16 +1709,27 @@ def validate_link_suggestions(ai_result, scene_data, vision_analysis):
                 logger.info("  ✓ All pivot positions acceptable")
 
         # ===== STAGE 5: AI-ASSISTED STRUCTURAL VALIDATION =====
+        # OPTIMIZATION: Only run AI validation if first 4 stages have no critical issues
+        # This saves API calls by focusing AI validation on already-decent structures
         if logger:
             logger.info("")
             logger.info("Stage 5: AI-Assisted Structural Validation")
-            logger.info("  Requesting comprehensive AI validation...")
 
-        client = get_azure_client()
-        deployment = get_deployment_name()
+        if validation_issues:
+            # Skip AI validation if basic validations failed
+            if logger:
+                logger.warning(f"  ⚠️  Skipping AI validation - {len(validation_issues)} critical issues in basic validation")
+                logger.warning("  Fix basic validation issues first before AI validation")
+        else:
+            # Only run AI validation if basic validations passed
+            if logger:
+                logger.info("  ✓ Basic validations passed - requesting comprehensive AI validation...")
 
-        if client and deployment:
-            validation_prompt = f"""You are an expert in robotic kinematics, SDF/URDF formats, and mechanical validation.
+            client = get_azure_client()
+            deployment = get_deployment_name()
+
+            if client and deployment:
+                validation_prompt = f"""You are an expert in robotic kinematics, SDF/URDF formats, and mechanical validation.
 
 Review the generated link structure against best practices for simulation-ready robot models.
 
@@ -1440,73 +1787,73 @@ Respond with JSON:
   "kinematic_chain_valid": true/false
 }}"""
 
-            try:
-                response = client.chat.completions.create(
-                    model=deployment,
-                    messages=[
-                        {"role": "system", "content": "You are an expert in robotics validation, SDF/URDF formats, and mechanical simulation."},
-                        {"role": "user", "content": validation_prompt}
-                    ],
-                    max_completion_tokens=16000
-                )
+                try:
+                    response = client.chat.completions.create(
+                        model=deployment,
+                        messages=[
+                            {"role": "system", "content": "You are an expert in robotics validation, SDF/URDF formats, and mechanical simulation."},
+                            {"role": "user", "content": validation_prompt}
+                        ],
+                        max_completion_tokens=16000
+                    )
 
-                validation_response = response.choices[0].message.content
+                    validation_response = response.choices[0].message.content
 
-                # Try to parse JSON
-                if "```json" in validation_response:
-                    validation_response = validation_response.split("```json")[1].split("```")[0].strip()
-                elif "```" in validation_response:
-                    validation_response = validation_response.split("```")[1].split("```")[0].strip()
+                    # Try to parse JSON
+                    if "```json" in validation_response:
+                        validation_response = validation_response.split("```json")[1].split("```")[0].strip()
+                    elif "```" in validation_response:
+                        validation_response = validation_response.split("```")[1].split("```")[0].strip()
 
-                ai_validation = json.loads(validation_response)
+                    ai_validation = json.loads(validation_response)
 
-                if logger:
-                    logger.info("")
-                    logger.info("  AI Validation Results:")
-                    logger.info(f"    Overall Valid: {ai_validation.get('is_valid', 'unknown')}")
-                    logger.info(f"    Confidence: {ai_validation.get('confidence', 'unknown')}%")
-                    logger.info(f"    Structural Score: {ai_validation.get('structural_score', 'unknown')}/100")
-                    logger.info(f"    Export Readiness: {ai_validation.get('export_readiness', 'unknown')}")
-                    logger.info(f"    Kinematic Chain Valid: {ai_validation.get('kinematic_chain_valid', 'unknown')}")
-
-                # Add critical issues
-                critical = ai_validation.get("critical_issues", [])
-                if critical:
                     if logger:
-                        logger.error(f"    Critical Issues: {len(critical)}")
-                    for issue in critical:
-                        validation_issues.append(f"❌ CRITICAL: {issue}")
+                        logger.info("")
+                        logger.info("  AI Validation Results:")
+                        logger.info(f"    Overall Valid: {ai_validation.get('is_valid', 'unknown')}")
+                        logger.info(f"    Confidence: {ai_validation.get('confidence', 'unknown')}%")
+                        logger.info(f"    Structural Score: {ai_validation.get('structural_score', 'unknown')}/100")
+                        logger.info(f"    Export Readiness: {ai_validation.get('export_readiness', 'unknown')}")
+                        logger.info(f"    Kinematic Chain Valid: {ai_validation.get('kinematic_chain_valid', 'unknown')}")
 
-                # Add warnings from AI
-                ai_warnings = ai_validation.get("warnings", [])
-                if ai_warnings:
+                    # Add critical issues
+                    critical = ai_validation.get("critical_issues", [])
+                    if critical:
+                        if logger:
+                            logger.error(f"    Critical Issues: {len(critical)}")
+                        for issue in critical:
+                            validation_issues.append(f"❌ CRITICAL: {issue}")
+
+                    # Add warnings from AI
+                    ai_warnings = ai_validation.get("warnings", [])
+                    if ai_warnings:
+                        if logger:
+                            logger.warning(f"    Warnings: {len(ai_warnings)}")
+                        for warning in ai_warnings:
+                            warnings.append(f"⚠️  AI: {warning}")
+
+                    # Add suggestions
+                    suggestions = ai_validation.get("suggestions", [])
+                    if suggestions:
+                        if logger:
+                            logger.info(f"    Suggestions: {len(suggestions)}")
+                        for suggestion in suggestions:
+                            warnings.append(f"💡 SUGGESTION: {suggestion}")
+
+                    # Export readiness check
+                    export_status = ai_validation.get("export_readiness", "unknown")
+                    if export_status == "major_issues":
+                        validation_issues.append("❌ EXPORT: Major issues detected - not ready for SDF/URDF export")
+                    elif export_status == "needs_fixes":
+                        warnings.append("⚠️  EXPORT: Minor fixes needed before export")
+                    elif export_status == "ready":
+                        if logger:
+                            logger.info("    ✓ Ready for SDF/URDF export")
+
+                except Exception as e:
                     if logger:
-                        logger.warning(f"    Warnings: {len(ai_warnings)}")
-                    for warning in ai_warnings:
-                        warnings.append(f"⚠️  AI: {warning}")
-
-                # Add suggestions
-                suggestions = ai_validation.get("suggestions", [])
-                if suggestions:
-                    if logger:
-                        logger.info(f"    Suggestions: {len(suggestions)}")
-                    for suggestion in suggestions:
-                        warnings.append(f"💡 SUGGESTION: {suggestion}")
-
-                # Export readiness check
-                export_status = ai_validation.get("export_readiness", "unknown")
-                if export_status == "major_issues":
-                    validation_issues.append("❌ EXPORT: Major issues detected - not ready for SDF/URDF export")
-                elif export_status == "needs_fixes":
-                    warnings.append("⚠️  EXPORT: Minor fixes needed before export")
-                elif export_status == "ready":
-                    if logger:
-                        logger.info("    ✓ Ready for SDF/URDF export")
-
-            except Exception as e:
-                if logger:
-                    logger.warning(f"  AI validation failed: {str(e)}")
-                warnings.append(f"⚠️  AI validation could not be performed: {str(e)}")
+                        logger.warning(f"  AI validation failed: {str(e)}")
+                    warnings.append(f"⚠️  AI validation could not be performed: {str(e)}")
 
         # ===== GENERATE COMPREHENSIVE VALIDATION REPORT =====
         if logger:
@@ -1684,28 +2031,39 @@ Analyze the validation issues and provide a CORRECTED link structure that fixes 
 {"CRITICAL: This is not the first attempt. Review the iteration history above." if history_context else ""}
 {"Learn from what didn't work before and try a DIFFERENT approach." if history_context else ""}
 
+LINKING PHILOSOPHY:
+- Create ONE base_link for all stationary components
+- Create ONE link per independently moving component/assembly
+- Components that move together = SAME link
+- Most mechanisms need only 2-4 links total
+- Focus on FUNCTIONAL movement, not individual component boundaries
+
 FIXES TO APPLY:
 1. Fix any circular dependencies
 2. Ensure proper object assignments (no duplicates, no orphans)
 3. Correct naming conventions
-4. Separate moving parts into different links
-5. Ensure parent-child relationships are logical
-6. Create a valid kinematic chain
+4. Group components that move together into the same link
+5. Separate independently moving parts into different links
+6. Ensure parent-child relationships are logical
+7. Avoid over-segmentation (too many links)
 
 Respond with JSON in the EXACT same format as the input:
 {{
   "links": [
     {{
       "name": "link_name",
-      "objects": ["object1", "object2"],
-      "reasoning": "why these objects form this link"
+      "objects": ["object1", "object2", ...],
+      "reasoning": "why these objects move together as one functional unit"
     }}
   ],
   "suggestions": "what was fixed and why (explain how this differs from previous attempts)",
   "fixes_applied": ["list of specific fixes applied in this iteration"]
 }}
 
-CRITICAL: Every object must be assigned to exactly ONE link. Fix all issues found.
+CRITICAL:
+- Every object must be assigned to exactly ONE link
+- Create minimal, functional links (base + moving components only)
+- Most mechanisms should have 2-4 links, not 10+
 """
 
         if logger:
@@ -1744,10 +2102,13 @@ CRITICAL: Every object must be assigned to exactly ONE link. Fix all issues foun
         return False, f"Failed to get fixes: {str(e)}"
 
 
-def iterative_validation_and_fix(initial_result, scene_data, vision_analysis, max_iterations=3):
+def iterative_validation_and_fix(initial_result, scene_data, vision_analysis, max_iterations=2):
     """
     Iteratively validate and fix link structure until validation passes or max iterations reached.
     Builds iteration history to help AI learn from previous attempts.
+
+    Links should be minimal and functional: base + independently moving components only.
+    Most mechanisms should have 2-4 links total.
 
     Args:
         initial_result (dict): Initial link structure
@@ -2081,11 +2442,11 @@ class SDFG_OT_AutoGenerateLinks(bpy.types.Operator):
         logger.info("Azure OpenAI connection verified")
         logger.info("")
 
-        # Step 1: Capture viewport images with dynamic angles (REQUIRED)
-        logger.section("STEP 1: DYNAMIC VISUAL CAPTURE")
-        self.report({'INFO'}, "Capturing viewport images with AI-optimized angles...")
+        # Step 1: Capture viewport images from fixed comprehensive angles (REQUIRED)
+        logger.section("STEP 1: COMPREHENSIVE VISUAL CAPTURE")
+        self.report({'INFO'}, "Capturing viewport images from multiple fixed angles...")
 
-        image_paths = capture_viewport_images(dynamic_angles=True)
+        image_paths = capture_viewport_images()
 
         if not image_paths or len(image_paths) == 0:
             logger.error("Failed to capture viewport images")
@@ -2165,7 +2526,7 @@ class SDFG_OT_AutoGenerateLinks(bpy.types.Operator):
         self.report({'INFO'}, "Running iterative validation and fixing...")
 
         final_result, validation_report, iterations_used = iterative_validation_and_fix(
-            result, scene_data, vision_analysis, max_iterations=3
+            result, scene_data, vision_analysis, max_iterations=2
         )
 
         logger.info("")
@@ -2436,7 +2797,7 @@ class SDFG_OT_ValidateLinksOnly(bpy.types.Operator):
             # Check Azure OpenAI connection
             client = get_azure_client()
             if client:
-                image_paths = capture_viewport_images(dynamic_angles=True)
+                image_paths = capture_viewport_images()
 
                 if image_paths and len(image_paths) > 0:
                     vision_success, vision_result, _ = analyze_images_with_ai(image_paths)
@@ -2529,11 +2890,11 @@ class SDFG_OT_AnalyzeSceneOnly(bpy.types.Operator):
             self.report({'ERROR'}, "Azure OpenAI not connected. Check UTILITIES tab.")
             return {'CANCELLED'}
 
-        # Capture and analyze images with dynamic angles (REQUIRED)
-        logger.section("DYNAMIC VISUAL CAPTURE & ANALYSIS")
-        self.report({'INFO'}, "Capturing viewport images with AI-optimized angles...")
+        # Capture and analyze images from fixed comprehensive angles (REQUIRED)
+        logger.section("COMPREHENSIVE VISUAL CAPTURE & ANALYSIS")
+        self.report({'INFO'}, "Capturing viewport images from multiple fixed angles...")
 
-        image_paths = capture_viewport_images(dynamic_angles=True)
+        image_paths = capture_viewport_images()
 
         if not image_paths or len(image_paths) == 0:
             logger.error("Failed to capture viewport images")
