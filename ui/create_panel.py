@@ -135,6 +135,7 @@ class SDFG_PT_CreateTabs(bpy.types.Panel):
                 if bpy.context.mode == 'POSE':
                     row = box.row()
                     box.operator("scene.create_joint", text="Create Joint")
+                    box.operator("scene.auto_create_joints", text="Auto-Create Joints (AI)", icon="AUTO")
                     box.prop(bpy.context.scene, "move_joints", toggle=True, text="Adjust Joint Positions/Rotations")
                     if bpy.context.scene.move_joints == True:
                         split = box.split()

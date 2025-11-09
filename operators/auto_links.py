@@ -2748,7 +2748,8 @@ class SDFG_OT_AutoGenerateLinks(bpy.types.Operator):
         logger.info("")
 
         # Refresh UI
-        context.area.tag_redraw()
+        if context.area:
+            context.area.tag_redraw()
 
         return {'FINISHED'}
 
@@ -3006,7 +3007,8 @@ class SDFG_OT_ValidateLinksOnly(bpy.types.Operator):
         )
 
         # Refresh UI
-        context.area.tag_redraw()
+        if context.area:
+            context.area.tag_redraw()
 
         return {'FINISHED'}
 

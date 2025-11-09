@@ -33,9 +33,12 @@ class SDFG_OT_CreateJoint(bpy.types.Operator):
         name="Joint Type:",
         description="Type of joint to create",
         items=[
-            ('Fixed', "Fixed", "Create a Fixed Joint."),
-            ('Revolute', "Revolute", "Create a revolute Joint."),
-            ('Prismatic', "Prismatic", "Create a prismatic Joint.")
+            ('Fixed', "Fixed", "No movement - welded connection (0 DOF)"),
+            ('Revolute', "Revolute", "Rotational with angle limits (1 DOF)"),
+            ('Continuous', "Continuous", "Unlimited 360° rotation like wheels (1 DOF)"),
+            ('Prismatic', "Prismatic", "Linear sliding motion (1 DOF)"),
+            ('Planar', "Planar", "Sliding + rotation in a plane (3 DOF)"),
+            ('Floating', "Floating", "Free motion in all directions (6 DOF)")
         ],
         default="Fixed"
     ) # type: ignore
@@ -162,6 +165,24 @@ class SDFG_OT_CreateJoint(bpy.types.Operator):
             rotation_constraint.min_y = math.radians(-45.0)
             rotation_constraint.max_y = math.radians(45.0)
 
+        elif self.joint_type_selection == 'Continuous':
+            joint_name = self.child_link_selection + "_joint_continuous"
+            joint_type = 'ContinuousJoint'
+            joint_shape = "revolute"  # Use revolute shape for continuous
+            pose_bone = self.create_joint_bone(context, joint_name, joint_type, joint_shape)
+
+            # Add limit rotation constraint but with no limits (continuous rotation)
+            bpy.ops.pose.constraint_add(type='LIMIT_ROTATION')
+            rotation_constraint = pose_bone.constraints['Limit Rotation']
+            rotation_constraint.use_limit_x = True
+            rotation_constraint.use_limit_z = True
+            rotation_constraint.use_limit_y = False  # No Y limit for continuous rotation
+            rotation_constraint.use_transform_limit = True
+            rotation_constraint.owner_space = 'LOCAL'
+
+            # Mark as continuous
+            context.active_pose_bone.joint_grp.revolute_continuous = True
+
         elif self.joint_type_selection == 'Prismatic':
             joint_name = self.child_link_selection + "_joint_prismatic"
             joint_type = 'PrismaticJoint'
@@ -182,6 +203,51 @@ class SDFG_OT_CreateJoint(bpy.types.Operator):
             location_constraint.use_transform_limit = True
             location_constraint.owner_space = 'LOCAL'
 
+        elif self.joint_type_selection == 'Planar':
+            joint_name = self.child_link_selection + "_joint_planar"
+            joint_type = 'PlanarJoint'
+            joint_shape = "prismatic"  # Use prismatic shape for planar
+            pose_bone = self.create_joint_bone(context, joint_name, joint_type, joint_shape)
+
+            # Add location constraint for 2D sliding (X and Y axes)
+            bpy.ops.pose.constraint_add(type='LIMIT_LOCATION')
+            location_constraint = pose_bone.constraints['Limit Location']
+            location_constraint.use_min_x = True
+            location_constraint.use_max_x = True
+            location_constraint.use_min_y = True
+            location_constraint.use_max_y = True
+            location_constraint.use_min_z = True
+            location_constraint.use_max_z = True
+            location_constraint.min_x = -1.0
+            location_constraint.max_x = 1.0
+            location_constraint.min_y = -1.0
+            location_constraint.max_y = 1.0
+            location_constraint.min_z = 0.0  # Lock Z axis
+            location_constraint.max_z = 0.0
+            location_constraint.use_transform_limit = True
+            location_constraint.owner_space = 'LOCAL'
+
+            # Add rotation constraint for rotation around Z only
+            bpy.ops.pose.constraint_add(type='LIMIT_ROTATION')
+            rotation_constraint = pose_bone.constraints['Limit Rotation']
+            rotation_constraint.use_limit_x = True
+            rotation_constraint.use_limit_y = True
+            rotation_constraint.use_limit_z = False  # Allow Z rotation
+            rotation_constraint.min_x = 0.0
+            rotation_constraint.max_x = 0.0
+            rotation_constraint.min_y = 0.0
+            rotation_constraint.max_y = 0.0
+            rotation_constraint.use_transform_limit = True
+            rotation_constraint.owner_space = 'LOCAL'
+
+        elif self.joint_type_selection == 'Floating':
+            joint_name = self.child_link_selection + "_joint_floating"
+            joint_type = 'FloatingJoint'
+            joint_shape = "fixed"  # Use fixed shape for floating (no constraints)
+            pose_bone = self.create_joint_bone(context, joint_name, joint_type, joint_shape)
+
+            # No constraints for floating joint - full 6 DOF freedom
+
         self.show_in_last_operation = True
     
         # bpy.ops.object.collection_instance_add()
@@ -194,6 +260,312 @@ class SDFG_OT_CreateJoint(bpy.types.Operator):
         bpy.data.objects[child_link].constraints['Child Of'].subtarget = bpy.context.active_pose_bone.name
         set_inverse(self, context)
         context.active_pose_bone.joint_grp.child_link = child_link
+
+        return {'FINISHED'}
+
+class SDFG_OT_AutoCreateJoints(bpy.types.Operator):
+    """Automatically create all joints from AI vision analysis"""
+    bl_idname = "scene.auto_create_joints"
+    bl_label = "Auto-Create Joints from AI"
+    bl_description = "Automatically creates joints based on AI vision analysis from Auto-Link"
+    bl_options = {'REGISTER', 'UNDO'}
+
+    def execute(self, context):
+        # Import the function to get saved joint data
+        from . import auto_links
+
+        # Get saved joint data from AI analysis
+        joint_data = auto_links.get_saved_joint_data()
+
+        if not joint_data:
+            self.report({'ERROR'}, "No AI joint data found. Run Auto-Link first to analyze the model.")
+            return {'CANCELLED'}
+
+        # Verify armature exists
+        armature_obj = None
+        for obj in bpy.context.scene.objects:
+            if getattr(obj, 'object_type', '') == 'ArmatureObject':
+                armature_obj = obj
+                break
+
+        if not armature_obj:
+            self.report({'ERROR'}, "No armature found. Create an armature first.")
+            return {'CANCELLED'}
+
+        # Set armature as active and switch to pose mode
+        armature_obj.select_set(True)
+        bpy.context.view_layer.objects.active = armature_obj
+        bpy.ops.object.mode_set(mode='POSE')
+
+        # Get all available link instance objects
+        available_links = {}
+        for obj in bpy.context.scene.objects:
+            if getattr(obj, 'object_type', '') == 'LinkInstanceObject':
+                available_links[obj.name] = obj
+
+        if not available_links:
+            self.report({'ERROR'}, "No link instance objects found. Create armature first.")
+            return {'CANCELLED'}
+
+        created_joints = []
+        skipped_joints = []
+
+        # Helper function to find best matching link
+        def find_best_match(ai_name, available_links):
+            """Find the best matching link instance object"""
+            # Exact match
+            if ai_name in available_links:
+                return ai_name, available_links[ai_name]
+
+            # Try variations
+            variations = [
+                ai_name,
+                ai_name.replace('_link', ''),
+                ai_name + '_link',
+                ai_name.replace('_link_link', '_link'),
+            ]
+
+            for var in variations:
+                if var in available_links:
+                    return var, available_links[var]
+
+            # Fuzzy match: check if key parts match
+            ai_parts = set(ai_name.lower().replace('_link', '').split('_'))
+            best_match = None
+            best_score = 0
+
+            for link_name in available_links.keys():
+                link_parts = set(link_name.lower().replace('_link', '').split('_'))
+                common = ai_parts & link_parts
+                if len(common) >= 2 and len(common) > best_score:
+                    best_score = len(common)
+                    best_match = link_name
+
+            if best_match:
+                return best_match, available_links[best_match]
+
+            return None, None
+
+        # Create each joint from the AI data
+        for joint_info in joint_data:
+            link_name = joint_info.get('link_name', '')
+            joint_type = joint_info.get('joint_type', '').lower()
+            parent_link = joint_info.get('parent_link', 'base_link')
+            joint_axis = joint_info.get('joint_axis', 'z').lower()
+            has_limits = joint_info.get('has_limits', False)
+
+            # Find matching link object
+            matched_name, link_obj = find_best_match(link_name, available_links)
+
+            if not link_obj:
+                skipped_joints.append(f"{link_name} (no matching link found)")
+                continue
+
+            # Check if link already has a joint
+            if link_obj.constraints.get('Child Of') and link_obj.constraints['Child Of'].subtarget != "":
+                skipped_joints.append(f"{link_name} (already has joint)")
+                continue
+
+            # Map AI joint type to Blender joint type
+            if joint_type == 'continuous':
+                bl_joint_type = 'Continuous'
+                joint_shape = "revolute"
+                internal_type = 'ContinuousJoint'
+                is_continuous = True
+            elif joint_type == 'revolute':
+                bl_joint_type = 'Revolute'
+                joint_shape = "revolute"
+                internal_type = 'RevoluteJoint'
+                is_continuous = False
+            elif joint_type == 'prismatic':
+                bl_joint_type = 'Prismatic'
+                joint_shape = "prismatic"
+                internal_type = 'PrismaticJoint'
+                is_continuous = False
+            elif joint_type == 'planar':
+                bl_joint_type = 'Planar'
+                joint_shape = "prismatic"
+                internal_type = 'PlanarJoint'
+                is_continuous = False
+            elif joint_type == 'floating':
+                bl_joint_type = 'Floating'
+                joint_shape = "fixed"
+                internal_type = 'FloatingJoint'
+                is_continuous = False
+            elif joint_type == 'fixed':
+                bl_joint_type = 'Fixed'
+                joint_shape = "fixed"
+                internal_type = 'FixedJoint'
+                is_continuous = False
+            else:
+                skipped_joints.append(f"{link_name} (unknown joint type: {joint_type})")
+                continue
+
+            # Create joint bone
+            try:
+                joint_name = f"{matched_name}_joint_{joint_type}"
+
+                # Switch to edit mode to create bone
+                bpy.ops.object.mode_set(mode='EDIT')
+
+                # Create bone
+                bpy.ops.armature.bone_primitive_add(name=joint_name)
+                joint_bone = armature_obj.data.edit_bones.get(joint_name)
+                armature_obj.data.edit_bones.active = joint_bone
+                joint_bone.select = True
+                joint_bone.length = 0.01
+
+                # Switch to pose mode to configure
+                bpy.ops.object.mode_set(mode='POSE')
+                pose_bone = armature_obj.pose.bones.get(joint_name)
+                armature_obj.data.bones.active = pose_bone.bone
+
+                # Set joint type
+                context.active_pose_bone.joint_grp.joint_type = internal_type
+
+                # Set bone custom shape
+                if joint_shape in bpy.data.objects:
+                    pose_bone.custom_shape = bpy.data.objects[joint_shape]
+                    pose_bone.use_custom_shape_bone_size = False
+                    pose_bone.custom_shape_wire_width = 2.0
+
+                # Set bone color
+                pose_bone.color.palette = 'CUSTOM'
+                context.active_pose_bone.color.custom.normal = (0.0, 1.0, 1.0)
+                context.active_pose_bone.color.custom.select = (0.0, 1.0, 1.0)
+                context.active_pose_bone.color.custom.active = (0.0, 1.0, 0.698)
+
+                # Configure joint based on type
+                if bl_joint_type == 'Revolute':
+                    # Add limit rotation constraint
+                    bpy.ops.pose.constraint_add(type='LIMIT_ROTATION')
+                    rotation_constraint = pose_bone.constraints['Limit Rotation']
+                    rotation_constraint.use_limit_x = True
+                    rotation_constraint.use_limit_z = True
+                    rotation_constraint.use_limit_y = True
+                    rotation_constraint.use_transform_limit = True
+                    rotation_constraint.owner_space = 'LOCAL'
+
+                    # Set continuous flag
+                    context.active_pose_bone.joint_grp.revolute_continuous = is_continuous
+
+                    if has_limits and not is_continuous:
+                        # Default limits, user can adjust later
+                        rotation_constraint.min_y = math.radians(-45.0)
+                        rotation_constraint.max_y = math.radians(45.0)
+                    else:
+                        # Wide limits for continuous joints
+                        rotation_constraint.min_y = math.radians(-360.0)
+                        rotation_constraint.max_y = math.radians(360.0)
+
+                elif bl_joint_type == 'Prismatic':
+                    # Add limit location constraint
+                    bpy.ops.pose.constraint_add(type='LIMIT_LOCATION')
+                    location_constraint = pose_bone.constraints['Limit Location']
+                    location_constraint.use_min_x = True
+                    location_constraint.use_min_y = True
+                    location_constraint.use_min_z = True
+                    location_constraint.use_max_x = True
+                    location_constraint.use_max_y = True
+                    location_constraint.use_max_z = True
+                    location_constraint.use_transform_limit = True
+                    location_constraint.owner_space = 'LOCAL'
+
+                    if has_limits:
+                        # Set limits based on axis (default values, user can adjust)
+                        if joint_axis == 'z':
+                            location_constraint.min_z = -0.5
+                            location_constraint.max_z = 0.5
+                        elif joint_axis == 'y':
+                            location_constraint.min_y = -0.5
+                            location_constraint.max_y = 0.5
+                        elif joint_axis == 'x':
+                            location_constraint.min_x = -0.5
+                            location_constraint.max_x = 0.5
+                    else:
+                        location_constraint.min_y = -0.2
+                        location_constraint.max_y = 0.2
+
+                elif bl_joint_type == 'Continuous':
+                    # Add limit rotation constraint but with no limits (continuous rotation)
+                    bpy.ops.pose.constraint_add(type='LIMIT_ROTATION')
+                    rotation_constraint = pose_bone.constraints['Limit Rotation']
+                    rotation_constraint.use_limit_x = True
+                    rotation_constraint.use_limit_z = True
+                    rotation_constraint.use_limit_y = False  # No Y limit for continuous rotation
+                    rotation_constraint.use_transform_limit = True
+                    rotation_constraint.owner_space = 'LOCAL'
+
+                    # Mark as continuous
+                    context.active_pose_bone.joint_grp.revolute_continuous = True
+
+                elif bl_joint_type == 'Planar':
+                    # Add location constraint for 2D sliding (X and Y axes)
+                    bpy.ops.pose.constraint_add(type='LIMIT_LOCATION')
+                    location_constraint = pose_bone.constraints['Limit Location']
+                    location_constraint.use_min_x = True
+                    location_constraint.use_max_x = True
+                    location_constraint.use_min_y = True
+                    location_constraint.use_max_y = True
+                    location_constraint.use_min_z = True
+                    location_constraint.use_max_z = True
+                    location_constraint.min_x = -1.0
+                    location_constraint.max_x = 1.0
+                    location_constraint.min_y = -1.0
+                    location_constraint.max_y = 1.0
+                    location_constraint.min_z = 0.0  # Lock Z axis
+                    location_constraint.max_z = 0.0
+                    location_constraint.use_transform_limit = True
+                    location_constraint.owner_space = 'LOCAL'
+
+                    # Add rotation constraint for rotation around Z only
+                    bpy.ops.pose.constraint_add(type='LIMIT_ROTATION')
+                    rotation_constraint = pose_bone.constraints['Limit Rotation']
+                    rotation_constraint.use_limit_x = True
+                    rotation_constraint.use_limit_y = True
+                    rotation_constraint.use_limit_z = False  # Allow Z rotation
+                    rotation_constraint.min_x = 0.0
+                    rotation_constraint.max_x = 0.0
+                    rotation_constraint.min_y = 0.0
+                    rotation_constraint.max_y = 0.0
+                    rotation_constraint.use_transform_limit = True
+                    rotation_constraint.owner_space = 'LOCAL'
+
+                elif bl_joint_type == 'Floating':
+                    # No constraints for floating joint - full 6 DOF freedom
+                    pass
+
+                elif bl_joint_type == 'Fixed':
+                    # No constraints for fixed joint - no movement
+                    pass
+
+                # Connect child link to this joint
+                link_obj.constraints['Child Of'].subtarget = pose_bone.name
+                set_inverse(self, context)
+                context.active_pose_bone.joint_grp.child_link = matched_name
+
+                # Show which link was matched if different from AI suggestion
+                if matched_name != link_name:
+                    created_joints.append(f"{link_name} → {matched_name} ({joint_type})")
+                else:
+                    created_joints.append(f"{link_name} ({joint_type})")
+
+            except Exception as e:
+                skipped_joints.append(f"{link_name} (error: {str(e)})")
+
+        # Report results
+        if created_joints:
+            self.report({'INFO'}, f"Created {len(created_joints)} joints: {', '.join(created_joints)}")
+
+        if skipped_joints:
+            self.report({'WARNING'}, f"Skipped {len(skipped_joints)} joints: {', '.join(skipped_joints)}")
+            if not created_joints:
+                # Show available links if all joints were skipped
+                link_list = ', '.join(available_links.keys())
+                self.report({'INFO'}, f"Available link objects: {link_list}")
+
+        if not created_joints and not skipped_joints:
+            self.report({'INFO'}, "No joints to create")
 
         return {'FINISHED'}
 
@@ -509,7 +881,10 @@ class JointBoneProperties(bpy.types.PropertyGroup):
             ("NotJoint", "Not a Joint", "Object is not a joint."),
             ("FixedJoint", "Fixed Joint", "Object is a fixed joint."),
             ("RevoluteJoint", "Revolute Joint", "Object is a revolute joint."),
+            ("ContinuousJoint", "Continuous Joint", "Object is a continuous joint."),
             ("PrismaticJoint", "Prismatic Joint", "Object is a prismatic joint."),
+            ("PlanarJoint", "Planar Joint", "Object is a planar joint."),
+            ("FloatingJoint", "Floating Joint", "Object is a floating joint."),
         ],
         default="NotJoint"
     ) # type: ignore
