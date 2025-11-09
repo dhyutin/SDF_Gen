@@ -2430,6 +2430,65 @@ def cleanup_existing_autolinks():
     return removed_count
 
 
+def join_objects_in_collection(collection, link_name, logger=None):
+    """
+    Join all mesh objects within a collection into a single mesh.
+    This combines parts that move together as one rigid body.
+
+    Args:
+        collection: The Blender collection containing objects to join
+        link_name: Name of the link (for naming the joined object)
+        logger: Optional logger for progress reporting
+
+    Returns:
+        bool: True if objects were joined, False otherwise
+    """
+    import bpy
+
+    # Get all mesh objects in the collection
+    mesh_objects = [obj for obj in collection.objects if obj.type == 'MESH']
+
+    # Need at least 2 objects to join
+    if len(mesh_objects) < 2:
+        if logger and len(mesh_objects) == 1:
+            logger.info(f"    Only 1 object in '{link_name}', no joining needed")
+        return False
+
+    try:
+        if logger:
+            logger.info(f"    Joining {len(mesh_objects)} objects into one mesh...")
+
+        # Deselect all
+        bpy.ops.object.select_all(action='DESELECT')
+
+        # Select all mesh objects in this collection
+        for obj in mesh_objects:
+            obj.select_set(True)
+
+        # Set the first object as active (this will be the base for joining)
+        bpy.context.view_layer.objects.active = mesh_objects[0]
+
+        # Join all selected objects
+        bpy.ops.object.join()
+
+        # Rename the joined object
+        joined_obj = bpy.context.view_layer.objects.active
+        joined_obj.name = f"{link_name}_mesh"
+
+        if logger:
+            logger.info(f"    ✓ Joined into '{joined_obj.name}'")
+
+        # Deselect
+        bpy.ops.object.select_all(action='DESELECT')
+
+        return True
+
+    except Exception as e:
+        if logger:
+            logger.warning(f"    ⚠️  Failed to join objects: {str(e)}")
+        return False
+
+
 def create_links_from_ai_suggestion(ai_result):
     """
     Automatically create link collections based on AI suggestions.
@@ -2513,7 +2572,15 @@ def create_links_from_ai_suggestion(ai_result):
                         if logger:
                             logger.warning(f"    Object '{obj_name}' not found")
 
-                links_created.append(f"{link_name} ({objects_moved} objects)")
+                # Optional: Join objects within the same link into one mesh
+                # This combines parts that move together as one rigid body
+                joined = join_objects_in_collection(visual_collection, link_name, logger)
+
+                if joined:
+                    links_created.append(f"{link_name} (joined {objects_moved} parts)")
+                else:
+                    links_created.append(f"{link_name} ({objects_moved} objects)")
+
                 if logger:
                     logger.info(f"  Successfully created link '{link_name}' with {objects_moved} objects")
 
@@ -2554,6 +2621,75 @@ def create_links_from_ai_suggestion(ai_result):
         return False, f"Error creating links: {str(e)}"
 
 
+class SDFG_OT_SeparateMergedObjects(bpy.types.Operator):
+    """Separate merged objects by loose parts"""
+
+    bl_idname = "scene.separate_merged_objects"
+    bl_label = "Separate Merged Objects"
+    bl_description = "Automatically separate objects that contain multiple disconnected parts (Separate by Loose Parts)"
+    bl_options = {"REGISTER", "UNDO"}
+
+    def execute(self, context):
+        separated_count = 0
+        total_parts = 0
+        objects_to_process = []
+
+        # Collect all mesh objects
+        for obj in bpy.context.scene.objects:
+            if obj.type == 'MESH' and len(obj.data.vertices) > 0:
+                objects_to_process.append(obj)
+
+        if not objects_to_process:
+            self.report({'INFO'}, "No mesh objects found")
+            return {'CANCELLED'}
+
+        self.report({'INFO'}, f"Analyzing {len(objects_to_process)} mesh objects...")
+
+        # Process each object
+        for obj in objects_to_process:
+            # Select only this object
+            bpy.ops.object.select_all(action='DESELECT')
+            obj.select_set(True)
+            bpy.context.view_layer.objects.active = obj
+
+            # Count initial number of objects
+            initial_count = len(bpy.context.scene.objects)
+
+            # Switch to edit mode and separate by loose parts
+            try:
+                bpy.ops.object.mode_set(mode='EDIT')
+                bpy.ops.mesh.select_all(action='SELECT')
+                bpy.ops.mesh.separate(type='LOOSE')
+                bpy.ops.object.mode_set(mode='OBJECT')
+
+                # Count how many new objects were created
+                final_count = len(bpy.context.scene.objects)
+                new_parts = final_count - initial_count
+
+                if new_parts > 0:
+                    separated_count += 1
+                    total_parts += new_parts
+                    print(f"Separated '{obj.name}' into {new_parts + 1} parts")
+
+            except Exception as e:
+                print(f"Could not separate '{obj.name}': {str(e)}")
+                # Make sure we're back in object mode
+                try:
+                    bpy.ops.object.mode_set(mode='OBJECT')
+                except:
+                    pass
+
+        # Deselect all
+        bpy.ops.object.select_all(action='DESELECT')
+
+        if separated_count > 0:
+            self.report({'INFO'}, f"Separated {separated_count} objects into {total_parts} additional parts")
+        else:
+            self.report({'INFO'}, "No merged objects found - all objects are already separate")
+
+        return {'FINISHED'}
+
+
 class SDFG_OT_AutoGenerateLinks(bpy.types.Operator):
     """Automatically generate links using AI analysis"""
 
@@ -2561,6 +2697,67 @@ class SDFG_OT_AutoGenerateLinks(bpy.types.Operator):
     bl_label = "Auto-Generate Links (AI)"
     bl_description = "Analyze scene and automatically create link collections using Azure OpenAI"
     bl_options = {"REGISTER", "UNDO"}
+
+    def separate_merged_objects(self, logger):
+        """
+        Separate objects that are merged but should be individual parts.
+        Uses 'Separate by Loose Parts' to split disconnected geometry.
+
+        Returns:
+            int: Number of objects that were separated
+        """
+        import bpy
+
+        separated_count = 0
+        objects_to_process = []
+
+        # Collect all mesh objects
+        for obj in bpy.context.scene.objects:
+            if obj.type == 'MESH' and len(obj.data.vertices) > 0:
+                objects_to_process.append(obj)
+
+        if not objects_to_process:
+            return 0
+
+        logger.info(f"Analyzing {len(objects_to_process)} mesh objects for loose parts...")
+
+        # Process each object
+        for obj in objects_to_process:
+            # Select only this object
+            bpy.ops.object.select_all(action='DESELECT')
+            obj.select_set(True)
+            bpy.context.view_layer.objects.active = obj
+
+            # Count initial number of objects
+            initial_count = len(bpy.context.scene.objects)
+
+            # Switch to edit mode and separate by loose parts
+            try:
+                bpy.ops.object.mode_set(mode='EDIT')
+                bpy.ops.mesh.select_all(action='SELECT')
+                bpy.ops.mesh.separate(type='LOOSE')
+                bpy.ops.object.mode_set(mode='OBJECT')
+
+                # Count how many new objects were created
+                final_count = len(bpy.context.scene.objects)
+                new_parts = final_count - initial_count
+
+                if new_parts > 0:
+                    separated_count += 1
+                    logger.info(f"  ✓ Separated '{obj.name}' into {new_parts + 1} parts")
+
+            except Exception as e:
+                logger.warning(f"  ⚠️  Could not separate '{obj.name}': {str(e)}")
+                # Make sure we're back in object mode
+                try:
+                    bpy.ops.object.mode_set(mode='OBJECT')
+                except:
+                    pass
+
+        # Deselect all
+        bpy.ops.object.select_all(action='DESELECT')
+
+        return separated_count
 
     def execute(self, context):
         global logger
@@ -2585,6 +2782,15 @@ class SDFG_OT_AutoGenerateLinks(bpy.types.Operator):
 
         logger.info("Azure OpenAI connection verified")
         logger.info("")
+
+        # Step 0: Smart object preprocessing (OPTIONAL - commented out by default)
+        # Uncomment if you need to separate merged CAD imports
+        # logger.section("STEP 0: OBJECT SEPARATION (PREPROCESSING)")
+        # self.report({'INFO'}, "Separating merged objects...")
+        # separated_count = self.separate_merged_objects(logger)
+        # if separated_count > 0:
+        #     logger.info(f"Separated {separated_count} merged objects into individual parts")
+        # logger.info("")
 
         # Step 1: Capture viewport images from fixed comprehensive angles (REQUIRED)
         logger.section("STEP 1: COMPREHENSIVE VISUAL CAPTURE")

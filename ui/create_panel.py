@@ -54,6 +54,11 @@ class SDFG_PT_CreateTabs(bpy.types.Panel):
             row.operator("scene.create_link_items", text="Visual")
             row.operator("scene.create_link_items", text="Collision")
 
+            # Object preprocessing (optional, for CAD imports with merged parts)
+            col.separator()
+            col.label(text="Preprocessing (optional):")
+            col.operator("scene.separate_merged_objects", text="Separate Loose Parts", icon="MOD_EXPLODE")
+
             # AI-powered link generation
             col.separator()
             col.operator("scene.auto_generate_links", text="Auto-Link (AI)", icon="AUTO")
