@@ -598,48 +598,125 @@ def analyze_images_with_ai(image_paths, cleanup_images=True, show_preview=True):
             return False, "No images were successfully encoded", 0
 
         # Create vision analysis prompt
-        vision_prompt = """You are an expert in robotic kinematics, mechanical engineering, and CAD analysis.
+        vision_prompt = """You are an expert in robotic kinematics, SDF/URDF formats, and simulation-ready robot models for Gazebo/Flowstate.
 
-You are viewing multiple angles (front, back, left, right, top, bottom, and diagonal views) of a 3D mechanical model/robot. Your task is to analyze the spatial and physical structure based on visual geometry.
+You are viewing multiple angles (front, back, left, right, top, bottom, and diagonal views) of a 3D mechanical model/robot. Your task is to analyze the kinematic structure for SDF export.
+
+CRITICAL UNDERSTANDING - LINKS ARE RIGID BODIES:
+- A "link" is a RIGID BODY in the kinematic chain, NOT an individual CAD part
+- Multiple CAD parts that move together = ONE link
+- Only parts that move INDEPENDENTLY = separate links
+- Links are connected by JOINTS (revolute, prismatic, fixed)
 
 ANALYSIS TASKS:
-1. Identify the BASE (fixed/stationary structure) - usually the largest grounded component
-2. Identify MOVING COMPONENTS that move independently from each other
-3. Identify JOINTS (hinges, sliders) that separate moving parts
-4. Determine what type of mechanism this is (robotic arm, gripper, wheeled robot, forklift, etc.)
-5. Group components into links where:
-   - ONE link = base (stationary)
-   - ONE link = each independently moving component or assembly
-   - Parts that move TOGETHER as a unit = SAME link
-   - Symmetric parts (left/right wheels) = separate links if they move independently
+1. Identify the BASE LINK (fixed/stationary structure):
+   - Usually the largest grounded component
+   - This is ALWAYS called "base_link" (SDF convention)
+   - Mark as static: true
+
+2. Identify MOVING LINKS (independently moving rigid bodies):
+   - Each independently moving part/assembly = ONE link
+   - Parts rigidly connected (no relative motion) = SAME link
+   - Symmetric parts (left/right wheels) = SEPARATE links if they move independently
+
+3. Identify JOINT TYPES for each moving link:
+   - REVOLUTE: Rotational/hinge joint (wheels, rotating arms)
+   - PRISMATIC: Linear/sliding joint (lifts, telescoping parts)
+   - FIXED: Permanently attached (should be in base_link instead)
+   - CONTINUOUS: Revolute joint without rotation limits (free-spinning wheels)
+
+4. Determine the KINEMATIC CHAIN:
+   - Trace the parent-child relationships from base to end-effector
+   - Each link connects to its parent link via a joint
 
 IMPORTANT GUIDELINES:
 - Most mechanisms have 2-4 links total (base + 1-3 moving parts)
-- Visible gaps or joints between parts indicate different links
-- Components rigidly connected belong to the same link
-- Focus on FUNCTIONAL movement, not individual component boundaries
+- Visible gaps, hinges, or sliding mechanisms indicate joints between links
+- If components don't move relative to each other, they're the SAME link
+- Focus on FUNCTIONAL movement, not CAD assembly structure
+
+SDF NAMING REQUIREMENTS:
+- Base link MUST be named "base_link"
+- All link names MUST end with "_link" suffix
+- Use descriptive names: "chassis_link", "wheel_left_link", "mast_link"
 
 Respond ONLY with valid JSON in this exact format:
 {
-  "model_description": "One sentence describing what this mechanism is (e.g., 'A four-wheeled forklift robot with articulated mast assembly')",
+  "model_description": "One sentence describing the mechanism type and key moving parts",
+  "mechanism_type": "wheeled_robot|robotic_arm|gripper|forklift|conveyor|other",
+  "total_degrees_of_freedom": <number>,
   "links": [
     {
+      "link_name": "base_link",
+      "is_base": true,
+      "static": true,
+      "function": "stationary foundation/chassis",
+      "components_description": "all fixed/stationary CAD parts",
+      "joint_type": "none",
+      "parent_link": null
+    },
+    {
       "link_name": "descriptive_name_link",
-      "function": "brief description of what this link does",
-      "components_description": "what visual components belong to this link",
-      "joint_type": "revolute|prismatic|fixed|none (for base)"
+      "is_base": false,
+      "static": false,
+      "function": "what this link does (e.g., 'rotates left wheel')",
+      "components_description": "CAD parts that move together as this rigid body",
+      "joint_type": "revolute|prismatic|continuous",
+      "parent_link": "base_link",
+      "joint_axis": "x|y|z (axis of rotation/translation)",
+      "has_limits": true|false
     }
   ]
 }
 
-Example for a simple forklift:
+Example for a forklift with 2 independently rotating rear wheels and a vertical lift:
 {
-  "model_description": "A wheeled forklift robot with independently rotating rear wheels and a vertical lifting mast",
+  "model_description": "A wheeled forklift robot with two independently rotating rear wheels and a vertical prismatic lift mechanism",
+  "mechanism_type": "forklift",
+  "total_degrees_of_freedom": 3,
   "links": [
-    {"link_name": "base_link", "function": "stationary chassis and body", "components_description": "main chassis, frame, and fixed structural elements", "joint_type": "none"},
-    {"link_name": "rear_left_wheel_link", "function": "left rear wheel rotation", "components_description": "cylindrical wheel on left rear", "joint_type": "revolute"},
-    {"link_name": "rear_right_wheel_link", "function": "right rear wheel rotation", "components_description": "cylindrical wheel on right rear", "joint_type": "revolute"},
-    {"link_name": "mast_assembly_link", "function": "vertical lifting mechanism", "components_description": "vertical rails and lifting carriage", "joint_type": "prismatic"}
+    {
+      "link_name": "base_link",
+      "is_base": true,
+      "static": true,
+      "function": "stationary chassis and body",
+      "components_description": "main chassis, frame, front casters, all non-moving structural elements",
+      "joint_type": "none",
+      "parent_link": null
+    },
+    {
+      "link_name": "rear_left_wheel_link",
+      "is_base": false,
+      "static": false,
+      "function": "left rear wheel rotation for driving",
+      "components_description": "cylindrical wheel assembly on left rear",
+      "joint_type": "continuous",
+      "parent_link": "base_link",
+      "joint_axis": "y",
+      "has_limits": false
+    },
+    {
+      "link_name": "rear_right_wheel_link",
+      "is_base": false,
+      "static": false,
+      "function": "right rear wheel rotation for driving",
+      "components_description": "cylindrical wheel assembly on right rear",
+      "joint_type": "continuous",
+      "parent_link": "base_link",
+      "joint_axis": "y",
+      "has_limits": false
+    },
+    {
+      "link_name": "mast_lift_link",
+      "is_base": false,
+      "static": false,
+      "function": "vertical lifting carriage",
+      "components_description": "lifting carriage, fork assembly, vertical sliding elements",
+      "joint_type": "prismatic",
+      "parent_link": "base_link",
+      "joint_axis": "z",
+      "has_limits": true
+    }
   ]
 }"""
 
@@ -740,6 +817,31 @@ Example for a simple forklift:
                         logger.info(f"  Joint Type: {link.get('joint_type', 'N/A')}")
                         logger.info("")
 
+                    # Extract and save joint information for later use
+                    joint_data = []
+                    for link in vision_json.get('links', []):
+                        # Skip base_link (it has no joint)
+                        if link.get('is_base', False) or link.get('joint_type') == 'none':
+                            continue
+
+                        joint_info = {
+                            'link_name': link.get('link_name', ''),
+                            'joint_type': link.get('joint_type', ''),
+                            'parent_link': link.get('parent_link', 'base_link'),
+                            'joint_axis': link.get('joint_axis', 'z'),
+                            'has_limits': link.get('has_limits', False),
+                            'function': link.get('function', ''),
+                            'components': link.get('components_description', '')
+                        }
+                        joint_data.append(joint_info)
+
+                    # Save joint data to scene for later retrieval
+                    if joint_data:
+                        bpy.context.scene['auto_link_joint_data'] = json.dumps(joint_data)
+                        logger.info(f"Saved {len(joint_data)} joint definitions for later use")
+                        logger.info("  Use the 'Create Joints' button to generate joints from this data")
+                        logger.info("")
+
                 except (json.JSONDecodeError, KeyError):
                     # Fallback to raw text display
                     for line in analysis.split('\n'):
@@ -803,6 +905,48 @@ def cleanup_temp_images(image_paths):
 
     if logger and cleaned > 0:
         logger.info(f"Cleaned up {cleaned} temporary image files")
+
+
+def get_saved_joint_data():
+    """
+    Retrieve joint data saved from vision analysis.
+
+    Returns:
+        list: List of joint definitions with structure:
+            [
+                {
+                    'link_name': str,
+                    'joint_type': 'continuous'|'prismatic'|'revolute',
+                    'parent_link': str,
+                    'joint_axis': 'x'|'y'|'z',
+                    'has_limits': bool,
+                    'function': str,
+                    'components': str
+                },
+                ...
+            ]
+        Returns empty list if no data is available.
+    """
+    global logger
+
+    try:
+        joint_data_json = bpy.context.scene.get('auto_link_joint_data')
+        if not joint_data_json:
+            if logger:
+                logger.warning("No saved joint data found")
+                logger.warning("  Run 'Auto-Link' first to analyze the model and generate joint definitions")
+            return []
+
+        joint_data = json.loads(joint_data_json)
+        if logger:
+            logger.info(f"Retrieved {len(joint_data)} saved joint definitions")
+
+        return joint_data
+
+    except (json.JSONDecodeError, KeyError) as e:
+        if logger:
+            logger.error(f"Failed to parse saved joint data: {str(e)}")
+        return []
 
 
 def analyze_spatial_relationships(scene_data):
