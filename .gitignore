@@ -2,3 +2,4 @@ __pycache__
 .DS_Store
 .env
 .env.example
+test_openai_import.py

@@ -6,6 +6,7 @@ import json
 import os
 import tempfile
 import base64
+import time
 from pathlib import Path
 from mathutils import Vector
 import mathutils
@@ -56,7 +57,6 @@ def load_llm_config():
         'api_version': os.environ.get('AZURE_OPENAI_API_VERSION', '2024-08-01-preview'),
         'deployment_name': os.environ.get('AZURE_OPENAI_DEPLOYMENT_NAME', 'gpt-4o'),
     }
-    print(config)
     return config
 
 
@@ -131,6 +131,9 @@ class SDFG_OT_MagicCollider(bpy.types.Operator):
             return False  # Default to not simple (use refinement)
 
     def execute(self, context):
+        # Start timing
+        start_time = time.time()
+
         print("\n" + "="*80)
         print("MAGIC COLLIDER - STARTING")
         print("="*80)
@@ -155,7 +158,9 @@ class SDFG_OT_MagicCollider(bpy.types.Operator):
             print(f"No selection - processing all {len(mesh_objects)} mesh object(s)")
 
         if not mesh_objects:
+            elapsed_time = time.time() - start_time
             print("ERROR: No mesh objects found in the scene")
+            print(f"\nTotal execution time: {elapsed_time:.2f} seconds")
             self.report({'WARNING'}, "No mesh objects found in the scene")
             return {'CANCELLED'}
 
@@ -229,13 +234,24 @@ class SDFG_OT_MagicCollider(bpy.types.Operator):
                     used_llm = True
                     llm_success_count += 1
 
+                    # Check if LLM recommended a single collider - skip refinement entirely
+                    colliders_info = llm_data.get('colliders', [])
+                    is_single_collider = (
+                        len(colliders_info) == 1 and
+                        colliders_info[0].get('bounds', {}).get('start', 0.0) == 0.0 and
+                        colliders_info[0].get('bounds', {}).get('end', 1.0) == 1.0
+                    )
+
                     # Check if object is simple - skip refinement for performance
-                    skip_refinement = self.is_simple_object(context, mesh_obj)
+                    skip_refinement = is_single_collider or self.is_simple_object(context, mesh_obj)
 
                     if skip_refinement:
-                        # Simple object - create colliders WITHOUT refinement loop
+                        # Simple object or single collider - create colliders WITHOUT refinement loop
                         print(f"\n{'='*80}")
-                        print(f"SKIPPING REFINEMENT FOR SIMPLE OBJECT (performance optimization)")
+                        if is_single_collider:
+                            print(f"SKIPPING REFINEMENT - SINGLE COLLIDER RECOMMENDED BY LLM")
+                        else:
+                            print(f"SKIPPING REFINEMENT FOR SIMPLE OBJECT (performance optimization)")
                         print(f"{'='*80}")
 
                         collider_objects = self.assign_compound_collider(context, mesh_obj, llm_data, self.collider_margin)
@@ -328,6 +344,10 @@ class SDFG_OT_MagicCollider(bpy.types.Operator):
             else:
                 self.report({'WARNING'}, f"No colliders assigned. Skipped {skipped_count} objects (already colliders or invalid)")
 
+        # Print total execution time
+        elapsed_time = time.time() - start_time
+        print(f"\n{'='*80}")
+        print(f"TOTAL EXECUTION TIME: {elapsed_time:.2f} seconds ({elapsed_time/60:.2f} minutes)")
         print("="*80 + "\n")
         return {'FINISHED'}
 
@@ -1595,12 +1615,7 @@ class SDFG_OT_MagicCollider(bpy.types.Operator):
                 error_msg = "No Azure endpoint provided. Set AZURE_OPENAI_ENDPOINT in .env file."
                 return None, error_msg
 
-            # Debug logging
-            print(f"\n=== FIRST LLM CALL: CLASSIFICATION ===")
-            print(f"Azure OpenAI Config:")
-            print(f"  Endpoint: {config['azure_endpoint']}")
-            print(f"  API Version: {config['api_version']}")
-            print(f"  Deployment: {config['deployment_name']}")
+
             print(f"  Sending {len(images_base64)} images (1 scene overview + 3 object views)")
 
             # Prepare the classification prompt
@@ -1630,12 +1645,12 @@ AVOID UNLESS ABSOLUTELY NECESSARY:
 - Plane: Only for extremely flat surfaces (rarely needed)
 
 DECISION CRITERIA:
-✓ SINGLE collider → Simple, uniform shapes:
+SINGLE collider → Simple, uniform shapes:
   - Box: Rectangular robot links, gripper bodies, vehicle chassis, brackets
   - Cylinder: Cylindrical shafts, wheels, tubes, cylindrical robot links
   - Small components (screws, nuts, bolts, washers, pins, rivets)
 
-✓ MULTIPLE colliders → Complex non-uniform shapes:
+MULTIPLE colliders → Complex non-uniform shapes:
   - Robot arms with varying cross-sections
   - Grippers with distinct body and finger sections
   - L-shapes, T-shapes, H-beams
@@ -1699,7 +1714,7 @@ Return ONLY JSON."""
                         "content": message_content
                     }
                 ],
-                temperature=0.7,
+                temperature=1,
                 max_completion_tokens=500,
             )
 
@@ -1757,12 +1772,7 @@ Return ONLY JSON."""
                 error_msg = "No Azure endpoint provided. Set AZURE_OPENAI_ENDPOINT in .env file."
                 return None, error_msg
 
-            # Debug logging
-            print(f"\n=== SECOND LLM CALL: DECOMPOSITION ===")
-            print(f"Azure OpenAI Config:")
-            print(f"  Endpoint: {config['azure_endpoint']}")
-            print(f"  API Version: {config['api_version']}")
-            print(f"  Deployment: {config['deployment_name']}")
+
             print(f"  Sending {len(images_base64)} images (1 scene overview + 3 object views)")
 
             # Get basic metadata from features
@@ -1896,7 +1906,7 @@ Return ONLY JSON."""
                         "content": message_content
                     }
                 ],
-                temperature=0.8,
+                temperature=1,
                 max_completion_tokens=1500,
             )
 
@@ -1968,9 +1978,9 @@ Return ONLY JSON."""
             return classification_data, None
 
         except json.JSONDecodeError as e:
-            return None, f"Invalid JSON in classification response: {str(e)}"
+            return None, f"Invalid JSON in classification response: {str(e)}\nOriginal output: {llm_response}"
         except Exception as e:
-            return None, f"Error parsing classification response: {str(e)}"
+            return None, f"Error parsing classification response: {str(e)}\nOriginal output: {llm_response}"
 
     def parse_llm_response(self, llm_response):
         """Parse and validate decomposition LLM JSON response"""
@@ -2063,9 +2073,9 @@ Return ONLY JSON."""
             return llm_data, None
 
         except json.JSONDecodeError as e:
-            return None, f"Invalid JSON in LLM response: {str(e)}"
+            return None, f"Invalid JSON in LLM response: {str(e)}\nOriginal output: {llm_response}"
         except Exception as e:
-            return None, f"Error parsing LLM response: {str(e)}"
+            return None, f"Error parsing LLM response: {str(e)}\nOriginal output: {llm_response}"
 
     def capture_scene_with_colliders(self, context, mesh_obj, collider_objects, camera_angle="SIDE"):
         """
@@ -2254,41 +2264,40 @@ Return ONLY JSON."""
                         history_context += "No rotation applied\n"
 
             # Prepare prompt
-            prompt_text = f"""TASK: Analyze if colliders (purple shapes) need horizontal rotation to better fit the object inside them.
+            prompt_text = f"""You are analyzing collision detection boxes (purple) for a robotics object.
 
-IMAGES PROVIDED:
-- Image 1: Side view - check if object sticks out vertically
-- Image 2: Top view (looking down) - PRIMARY VIEW for checking horizontal rotation alignment
+# YOUR TASK
+Determine if the purple colliders need horizontal rotation to better align with the object.
 
-CRITICAL REQUIREMENTS:
-1. Colliders (purple) must COMPLETELY CONTAIN the object - no parts sticking out
-2. Colliders should be TIGHT-FITTING - minimize empty space but never smaller than the object
-3. Colliders should FACE THE SAME DIRECTION as the object (aligned with object's orientation)
+# IMAGES
+- Image 1: Side view
+- Image 2: Top view (MOST IMPORTANT - check horizontal alignment here)
 
-WHAT TO CHECK:
-- TOP VIEW (Image 2): Are colliders rotated to match the object's orientation? This is the MOST IMPORTANT view.
-- SIDE VIEW (Image 1): Does the object stick out of the colliders anywhere?
-- Are the colliders' longest axes aligned with the object's longest axes?
-- Is there excessive empty space that rotation could reduce?{history_context}
+# ANALYSIS CRITERIA
+1. Do colliders completely contain the object? (no parts sticking out)
+2. Are colliders aligned with object's orientation? (check top view)
+3. Would rotation reduce empty space while maintaining full coverage?{history_context}
 
-OUTPUT (JSON only) Example:
-Rotation needed:
+# REQUIRED OUTPUT FORMAT
+You MUST respond with ONLY a JSON object in one of these two formats:
+
+If rotation is needed:
 {{
   "rotation_needed": true,
   "angle_degrees": 30.0,
-  "reasoning": "Brief why this angle improves fit"
+  "reasoning": "Brief explanation"
 }}
 
-No rotation needed:
+If rotation is NOT needed:
 {{
   "rotation_needed": false,
-  "reasoning": "Brief why current fit is good"
+  "reasoning": "Brief explanation"
 }}
 
-NOTES:
-- Angle in degrees (-180 to 180), positive = counter-clockwise in top view
+IMPORTANT:
+- angle_degrees: -180 to 180 (positive = counter-clockwise in top view)
 - Only suggest rotation if it SIGNIFICANTLY improves fit
-- Return ONLY JSON"""
+- Respond with ONLY the JSON object, no other text"""
 
             # Initialize client
             client = AzureOpenAI(
@@ -2311,7 +2320,7 @@ NOTES:
             response = client.chat.completions.create(
                 model=config['deployment_name'],
                 messages=[{"role": "user", "content": message_content}],
-                temperature=0.7,
+                temperature=1,
                 max_completion_tokens=500,
             )
 
@@ -2331,7 +2340,8 @@ NOTES:
             import re
             json_match = re.search(r'\{[^{}]*\}', llm_response, re.DOTALL)
             if not json_match:
-                print(f"  ERROR: Could not find JSON in response")
+                print(f"  ERROR: Could not find JSON in response. Original LLM output:")
+                print(f"  {llm_response}")
                 return None
 
             result = json.loads(json_match.group(0))
@@ -2435,64 +2445,67 @@ Number of Colliders: {len(current_llm_data.get('colliders', []))}
                 current_spec_summary += f"  Part {idx+1}: {col.get('type', 'N/A')} along {col.get('axis', 'N/A')}, bounds {col.get('bounds', {}).get('start', 0):.2f}-{col.get('bounds', {}).get('end', 1):.2f}\n"
 
             # Prepare prompt
-            prompt_text = f"""TASK: Analyze if colliders (purple shapes) fit the robotics object properly. Check size, shape, and segmentation.
+            prompt_text = f"""You are analyzing collision detection boxes (purple) for a robotics object.
 
-IMAGES PROVIDED:
+# YOUR TASK
+Determine if the current collider specification needs refinement. Check if colliders properly contain the object with good fit.
+
+# IMAGES
 - Image 1: Side view 1
 - Image 2: Side view 2
-- Image 3: Top view (looking down)
-
-CONTEXT - ROBOTICS APPLICATIONS:
-Analyzing colliders for robot arms, grippers, humanoids, or vehicles. Prefer Box and Cylinder colliders for robotic components.
-
-CRITICAL REQUIREMENTS:
-1. Colliders must COMPLETELY CONTAIN the object - no parts sticking out
-2. Colliders should be TIGHT-FITTING - not excessively larger than the object
-3. Colliders should approximate the object's shape reasonably well
-
-WHAT TO CHECK:
-✓ Does the object stick out of any collider? (CRITICAL - this must be fixed)
-✓ Are colliders excessively larger than the object sections they're supposed to cover?
-✓ Would different shapes (Box or Cylinder) provide better containment AND tighter fit?
-✓ Should the object be divided differently (more/fewer segments) for better coverage?
-✓ Do the bounds (start/end positions) need adjustment?
-
-ROBOTICS GUIDELINES:
-- Prefer Box for rectangular robot links, gripper fingers, vehicle chassis
-- Prefer Cylinder for cylindrical shafts, joints, wheels
-- Avoid Sphere and Plane unless geometry absolutely requires it
-
-NOTE: Small gaps between collider and object are acceptable, but object parts sticking out or excessive empty space are not.
+- Image 3: Top view
 
 {current_spec_summary}{history_context}
 
-OUTPUT (JSON only):
-Refinement needed:
+# ANALYSIS CRITERIA
+1. CRITICAL: Do colliders completely contain the object? (no parts sticking out)
+2. Are colliders tight-fitting? (not excessively larger than needed)
+3. Would different shapes (Box/Cylinder) or segmentation improve fit?
+4. Do bounds (segment positions) need adjustment?
+
+# ROBOTICS GUIDELINES
+- Prefer Box for: rectangular robot links, gripper fingers, chassis
+- Prefer Cylinder for: cylindrical shafts, joints, wheels
+- Avoid Sphere and Plane unless absolutely necessary
+- Small gaps are acceptable; parts sticking out are NOT
+
+# REQUIRED OUTPUT FORMAT
+You MUST respond with ONLY a JSON object in one of these two formats:
+
+If refinement IS needed:
 {{
   "needs_refinement": true,
-  "decomposition_axis": "X|Y|Z",
+  "decomposition_axis": "X",
   "colliders": [
     {{
-      "type": "Box|Cylinder",
-      "axis": "X|Y|Z",
-      "bounds": {{"start": 0.0, "end": 1.0}},
-      "reasoning": "Why this collider for this section"
+      "type": "Box",
+      "axis": "X",
+      "bounds": {{"start": 0.0, "end": 0.5}},
+      "reasoning": "Why this collider"
+    }},
+    {{
+      "type": "Cylinder",
+      "axis": "X",
+      "bounds": {{"start": 0.5, "end": 1.0}},
+      "reasoning": "Why this collider"
     }}
   ],
   "refinement_reasoning": "What was improved"
 }}
 
-No refinement needed (good enough):
+If refinement is NOT needed:
 {{
   "needs_refinement": false,
   "reasoning": "Why current colliders are acceptable"
 }}
 
-NOTES:
-- bounds: 0.0-1.0 proportion along decomposition axis
+IMPORTANT:
+- decomposition_axis: X, Y, or Z
+- type: Box or Cylinder (avoid Sphere/Plane)
+- axis: X, Y, or Z (for Cylinder orientation)
+- bounds: start and end values between 0.0 and 1.0
 - Only refine if fit is SIGNIFICANTLY poor
-- Prefer Box and Cylinder over Sphere and Plane
-- Return ONLY JSON"""
+- Respond with ONLY the JSON object, no other text"""
 
             # Initialize client
             client = AzureOpenAI(
@@ -2515,7 +2528,7 @@ NOTES:
             response = client.chat.completions.create(
                 model=config['deployment_name'],
                 messages=[{"role": "user", "content": message_content}],
-                temperature=0.7,
+                temperature=1,
                 max_completion_tokens=1000,
             )
 
@@ -2535,7 +2548,8 @@ NOTES:
             import re
             json_match = re.search(r'\{.*\}', llm_response, re.DOTALL)
             if not json_match:
-                print(f"  ERROR: Could not find JSON in response")
+                print(f"  ERROR: Could not find JSON in response. Original LLM output:")
+                print(f"  {llm_response}")
                 return None, False
 
             result = json.loads(json_match.group(0))
