@@ -87,6 +87,38 @@ class SDFG_PT_CreateTabs(bpy.types.Panel):
             col.operator("mesh.add_collider", text="Mesh Collider").shape_type = "Mesh"
 
             col.label(text="Auto colliders:")
+
+            # LLM Settings (collapsible)
+            row = col.row()
+            row.prop(context.scene, "use_llm_collider", text="Use AI (Azure OpenAI)", toggle=True)
+
+            if context.scene.use_llm_collider:
+                box_llm = col.box()
+                box_llm.label(text="Azure OpenAI Configuration:", icon="SETTINGS")
+
+                row_info = box_llm.row()
+                row_info.label(text="Configure in .env file:", icon="FILE_TEXT")
+
+                row_info = box_llm.row()
+                row_info.scale_y = 0.7
+                row_info.label(text="AZURE_OPENAI_API_KEY=your_key")
+                row_info = box_llm.row()
+                row_info.scale_y = 0.7
+                row_info.label(text="AZURE_OPENAI_ENDPOINT=your_endpoint")
+                row_info = box_llm.row()
+                row_info.scale_y = 0.7
+                row_info.label(text="AZURE_OPENAI_DEPLOYMENT_NAME=gpt-4o")
+                row_info = box_llm.row()
+                row_info.scale_y = 0.7
+                row_info.label(text="AZURE_OPENAI_API_VERSION=2024-08-01-preview")
+
+                # Performance settings
+                box_perf = col.box()
+                box_perf.label(text="Performance Settings:", icon="SETTINGS")
+                box_perf.prop(context.scene, "max_refinement_iterations")
+                box_perf.prop(context.scene, "simple_object_volume_threshold")
+                box_perf.prop(context.scene, "simple_object_size_threshold")
+
             col.operator("mesh.magic_collider", text="Magic")
 
             # Display Magic Collider results
@@ -103,6 +135,40 @@ class SDFG_PT_CreateTabs(bpy.types.Panel):
                     else:
                         collider_text = result.collider_type
                     row.label(text=collider_text)
+
+                    # Display LLM indicator if used
+                    if result.used_llm:
+                        row.label(text="[LLM]", icon="AUTO")
+
+                    # Display LLM reasoning if available
+                    if result.llm_reasoning:
+                        sub_row = box.row()
+                        sub_row.alignment = 'LEFT'
+                        # Add indentation and wrap text
+                        reasoning_lines = [result.llm_reasoning[i:i+60] for i in range(0, len(result.llm_reasoning), 60)]
+                        for line in reasoning_lines:
+                            sub_row = box.row()
+                            sub_row.scale_y = 0.8
+                            sub_row.label(text="  " + line, icon="DOT" if line == reasoning_lines[0] else "BLANK1")
+
+                    # Display LLM error if any - LARGER AND MORE VISIBLE
+                    if result.llm_error:
+                        error_box = box.box()
+                        error_box.alert = True
+                        error_row = error_box.row()
+                        error_row.label(text="LLM ERROR:", icon="ERROR")
+
+                        # Split error into multiple lines for readability
+                        error_lines = [result.llm_error[i:i+50] for i in range(0, len(result.llm_error), 50)]
+                        for line in error_lines:
+                            err_line = error_box.row()
+                            err_line.scale_y = 1.2
+                            err_line.label(text=line)
+
+                        # Add note about console
+                        console_row = error_box.row()
+                        console_row.scale_y = 0.7
+                        console_row.label(text="See console for full error details", icon="INFO")
 
             col = split.column()
             
