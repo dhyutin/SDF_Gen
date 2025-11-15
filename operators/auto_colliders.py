@@ -2266,16 +2266,16 @@ CRITICAL REQUIREMENTS:
 3. Colliders should FACE THE SAME DIRECTION as the object (aligned with object's orientation)
 
 WHAT TO CHECK:
-✓ TOP VIEW (Image 2): Are colliders rotated to match the object's orientation? This is the MOST IMPORTANT view.
-✓ SIDE VIEW (Image 1): Does the object stick out of the colliders anywhere?
-✓ Are the colliders' longest axes aligned with the object's longest axes?
-✓ Is there excessive empty space that rotation could reduce?{history_context}
+- TOP VIEW (Image 2): Are colliders rotated to match the object's orientation? This is the MOST IMPORTANT view.
+- SIDE VIEW (Image 1): Does the object stick out of the colliders anywhere?
+- Are the colliders' longest axes aligned with the object's longest axes?
+- Is there excessive empty space that rotation could reduce?{history_context}
 
-OUTPUT (JSON only):
+OUTPUT (JSON only) Example:
 Rotation needed:
 {{
   "rotation_needed": true,
-  "angle_degrees": 45.0,
+  "angle_degrees": 30.0,
   "reasoning": "Brief why this angle improves fit"
 }}
 

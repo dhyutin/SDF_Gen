@@ -51,7 +51,7 @@ def register():
     bpy.types.Scene.max_refinement_iterations = bpy.props.IntProperty(
         name="Max Refinement Iterations",
         description="Maximum number of refinement iterations for complex objects (0=skip, 1=balanced, 3=high quality)",
-        default=1,
+        default=2,
         min=0,
         max=3
     )
