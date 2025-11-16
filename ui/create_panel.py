@@ -57,7 +57,7 @@ class SDFG_PT_CreateTabs(bpy.types.Panel):
             # Object preprocessing (optional, for CAD imports with merged parts)
             col.separator()
             col.label(text="Preprocessing (optional):")
-            col.operator("scene.separate_merged_objects", text="Separate Loose Parts", icon="MOD_EXPLODE")
+            col.operator("scene.separate_merged_objects", text="Smart Separate & Group", icon="PARTICLE_POINT")
 
             # AI-powered link generation
             col.separator()

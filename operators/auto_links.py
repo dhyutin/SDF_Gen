@@ -197,7 +197,10 @@ Elevation: -45 to 45° (negative=below, positive=above)
                     {"type": "image_url", "image_url": {"url": f"data:image/png;base64,{encoded_image}"}}
                 ]}
             ],
-            max_completion_tokens=2000
+            max_completion_tokens=2000,
+            # Note: temperature parameter not supported by reasoning models (o1, o3-mini, etc.)
+            # Determinism maintained via seed parameter
+            seed=42
         )
 
         result = response.choices[0].message.content
@@ -608,22 +611,49 @@ CRITICAL UNDERSTANDING - LINKS ARE RIGID BODIES:
 - Only parts that move INDEPENDENTLY = separate links
 - Links are connected by JOINTS (revolute, prismatic, fixed)
 
+⚠️ CRITICAL: FIRST CHECK IF THIS IS A STATIC OBJECT
+Before analyzing links, determine:
+- Does this object have ANY moving parts visible?
+- Are there ANY hinges, joints, wheels, sliders, or movable components?
+- If NO movement is possible → Create ONLY base_link with NO joints (total_degrees_of_freedom: 0)
+- Examples of static objects: clamps, mounting brackets, decorative items, tool holders
+
 ANALYSIS TASKS:
 1. Identify the BASE LINK (fixed/stationary structure):
    - Usually the largest grounded component
    - This is ALWAYS called "base_link" (SDF convention)
    - Mark as static: true
+   - INCLUDE: All structural, decorative, and non-moving parts
 
 2. Identify MOVING LINKS (independently moving rigid bodies):
    - Each independently moving part/assembly = ONE link
    - Parts rigidly connected (no relative motion) = SAME link
-   - Symmetric parts (left/right wheels) = SEPARATE links if they move independently
 
-3. Identify JOINT TYPES for each moving link:
+   ⚠️ SYMMETRIC PARTS RULE (CRITICAL):
+   - Count identical moving parts explicitly (1, 2, 3, or 4 - NOT "multiple")
+   - Grippers: Count EACH finger separately
+     → 2-finger gripper = 2 separate finger links
+     → 3-jaw chuck = 3 separate jaw links
+   - Wheels: Count EACH wheel separately
+     → 2 wheels = 2 separate wheel links (left_wheel_link, right_wheel_link)
+     → 4 wheels = 4 separate wheel links
+   - DO NOT combine symmetric parts into one link
+
+3. Identify JOINT TYPES AND LOCATIONS for each moving link:
    - REVOLUTE: Rotational/hinge joint (wheels, rotating arms)
+     → Visually locate the rotation AXIS (cylindrical feature, axle, hinge pin)
+     → Note which direction the axis runs (x, y, or z)
    - PRISMATIC: Linear/sliding joint (lifts, telescoping parts)
-   - FIXED: Permanently attached (should be in base_link instead)
+     → Visually locate the sliding DIRECTION (rail, guide, track)
+     → Note which direction the slide occurs (x, y, or z)
    - CONTINUOUS: Revolute joint without rotation limits (free-spinning wheels)
+   - FIXED: Permanently attached (should be in base_link instead)
+
+   ⚠️ JOINT PLACEMENT (CRITICAL FOR FUNCTIONALITY):
+   For each joint, identify WHERE it should be located:
+   - Revolute joints: At the CENTER of the rotation axis (wheel axle, hinge pin)
+   - Prismatic joints: Along the sliding rail/guide at the connection point
+   - Provide visual description of joint location for each moving link
 
 4. Determine the KINEMATIC CHAIN:
    - Trace the parent-child relationships from base to end-effector
@@ -631,20 +661,26 @@ ANALYSIS TASKS:
 
 IMPORTANT GUIDELINES:
 - Most mechanisms have 2-4 links total (base + 1-3 moving parts)
+- Static objects have ONLY base_link (1 link total, 0 DOF)
 - Visible gaps, hinges, or sliding mechanisms indicate joints between links
 - If components don't move relative to each other, they're the SAME link
 - Focus on FUNCTIONAL movement, not CAD assembly structure
+- Structural elements (frames, mounts, housings) belong in base_link
 
 SDF NAMING REQUIREMENTS:
 - Base link MUST be named "base_link"
 - All link names MUST end with "_link" suffix
-- Use descriptive names: "chassis_link", "wheel_left_link", "mast_link"
+- Use descriptive names with position indicators:
+  → Wheels: "front_left_wheel_link", "rear_right_wheel_link"
+  → Grippers: "left_finger_link", "right_finger_link", "middle_finger_link"
+  → Generic: "lift_carriage_link", "rotating_platform_link"
 
 Respond ONLY with valid JSON in this exact format:
 {
   "model_description": "One sentence describing the mechanism type and key moving parts",
-  "mechanism_type": "wheeled_robot|robotic_arm|gripper|forklift|conveyor|other",
-  "total_degrees_of_freedom": <number>,
+  "mechanism_type": "wheeled_robot|robotic_arm|gripper|forklift|conveyor|static_object|other",
+  "total_degrees_of_freedom": <number (0 for static objects)>,
+  "is_static_object": true|false (true if no moving parts detected),
   "links": [
     {
       "link_name": "base_link",
@@ -664,23 +700,25 @@ Respond ONLY with valid JSON in this exact format:
       "joint_type": "revolute|prismatic|continuous",
       "parent_link": "base_link",
       "joint_axis": "x|y|z (axis of rotation/translation)",
+      "joint_location_description": "visual description of where the joint should be placed (e.g., 'at center of wheel axle', 'along vertical sliding rail')",
       "has_limits": true|false
     }
   ]
 }
 
-Example for a forklift with 2 independently rotating rear wheels and a vertical lift:
+EXAMPLE 1: Forklift with 2 independently rotating rear wheels and a vertical lift:
 {
   "model_description": "A wheeled forklift robot with two independently rotating rear wheels and a vertical prismatic lift mechanism",
   "mechanism_type": "forklift",
   "total_degrees_of_freedom": 3,
+  "is_static_object": false,
   "links": [
     {
       "link_name": "base_link",
       "is_base": true,
       "static": true,
       "function": "stationary chassis and body",
-      "components_description": "main chassis, frame, front casters, all non-moving structural elements",
+      "components_description": "main chassis, frame, front casters, fork mounting structure, all non-moving structural elements",
       "joint_type": "none",
       "parent_link": null
     },
@@ -693,6 +731,7 @@ Example for a forklift with 2 independently rotating rear wheels and a vertical 
       "joint_type": "continuous",
       "parent_link": "base_link",
       "joint_axis": "y",
+      "joint_location_description": "at center of left rear wheel axle where wheel connects to chassis",
       "has_limits": false
     },
     {
@@ -704,6 +743,7 @@ Example for a forklift with 2 independently rotating rear wheels and a vertical 
       "joint_type": "continuous",
       "parent_link": "base_link",
       "joint_axis": "y",
+      "joint_location_description": "at center of right rear wheel axle where wheel connects to chassis",
       "has_limits": false
     },
     {
@@ -715,7 +755,82 @@ Example for a forklift with 2 independently rotating rear wheels and a vertical 
       "joint_type": "prismatic",
       "parent_link": "base_link",
       "joint_axis": "z",
+      "joint_location_description": "at base of vertical mast rail where carriage slides up/down",
       "has_limits": true
+    }
+  ]
+}
+
+EXAMPLE 2: 3-jaw chuck gripper with independently moving jaws:
+{
+  "model_description": "A 3-jaw chuck gripper with three independently sliding prismatic jaws for grasping",
+  "mechanism_type": "gripper",
+  "total_degrees_of_freedom": 3,
+  "is_static_object": false,
+  "links": [
+    {
+      "link_name": "base_link",
+      "is_base": true,
+      "static": true,
+      "function": "stationary chuck body and mechanism housing",
+      "components_description": "chuck body, housing, mounting plate, internal mechanism",
+      "joint_type": "none",
+      "parent_link": null
+    },
+    {
+      "link_name": "jaw_1_link",
+      "is_base": false,
+      "static": false,
+      "function": "first jaw sliding radially inward/outward for gripping",
+      "components_description": "first jaw finger with teeth/grip surface",
+      "joint_type": "prismatic",
+      "parent_link": "base_link",
+      "joint_axis": "x",
+      "joint_location_description": "along radial sliding rail for jaw 1 at 0 degrees position",
+      "has_limits": true
+    },
+    {
+      "link_name": "jaw_2_link",
+      "is_base": false,
+      "static": false,
+      "function": "second jaw sliding radially inward/outward for gripping",
+      "components_description": "second jaw finger with teeth/grip surface",
+      "joint_type": "prismatic",
+      "parent_link": "base_link",
+      "joint_axis": "x",
+      "joint_location_description": "along radial sliding rail for jaw 2 at 120 degrees position",
+      "has_limits": true
+    },
+    {
+      "link_name": "jaw_3_link",
+      "is_base": false,
+      "static": false,
+      "function": "third jaw sliding radially inward/outward for gripping",
+      "components_description": "third jaw finger with teeth/grip surface",
+      "joint_type": "prismatic",
+      "parent_link": "base_link",
+      "joint_axis": "x",
+      "joint_location_description": "along radial sliding rail for jaw 3 at 240 degrees position",
+      "has_limits": true
+    }
+  ]
+}
+
+EXAMPLE 3: Static clamp (no moving parts):
+{
+  "model_description": "A static mounting clamp with no moving parts",
+  "mechanism_type": "static_object",
+  "total_degrees_of_freedom": 0,
+  "is_static_object": true,
+  "links": [
+    {
+      "link_name": "base_link",
+      "is_base": true,
+      "static": true,
+      "function": "complete static clamp assembly",
+      "components_description": "all clamp parts, body, mounting features, grip surfaces",
+      "joint_type": "none",
+      "parent_link": null
     }
   ]
 }"""
@@ -750,7 +865,10 @@ Example for a forklift with 2 independently rotating rear wheels and a vertical 
                     }
                 ],
                 max_completion_tokens=16000,  # Higher limit for reasoning models (gpt-5-mini uses reasoning tokens)
-                timeout=120  # Increased timeout for reasoning models
+                timeout=120,  # Increased timeout for reasoning models
+                # Note: temperature parameter not supported by reasoning models (o1, o3-mini, etc.)
+                # Determinism maintained via seed parameter
+                seed=42
             )
 
             if logger:
@@ -1394,75 +1512,110 @@ def create_ai_prompt(formatted_data, vision_analysis):
         str: Complete prompt for AI
     """
     vision_context = f"""
-VISUAL ANALYSIS (from multi-angle inspection):
-{'=' * 60}
+╔═══════════════════════════════════════════════════════════════════════════════╗
+║                    VISUAL ANALYSIS (PRIMARY GUIDANCE)                         ║
+║                  from multi-angle image inspection                            ║
+╚═══════════════════════════════════════════════════════════════════════════════╝
 {vision_analysis}
-{'=' * 60}
+╚═══════════════════════════════════════════════════════════════════════════════╝
 
-IMPORTANT: Use the visual analysis above as PRIMARY guidance for link grouping.
-The visual analysis provides domain knowledge about the mechanical structure that should
-take precedence over naming conventions in the scene data below.
+⚠️  CRITICAL: The visual analysis above is the PRIMARY and MOST RELIABLE source of truth.
+⚠️  It contains expert kinematic analysis from visual inspection.
+⚠️  The scene data below is SECONDARY - use it only to MAP objects to the links identified in the visual analysis.
+⚠️  DO NOT create new links or change the structure defined in the visual analysis.
 """
 
     prompt = f"""You are an expert in robotic kinematics and SDF (Simulation Description Format) file generation.
-Your task is to analyze a Blender scene and group objects into "links" for a robot/mechanism model.
+Your task is to MAP Blender scene objects to the link structure identified by the visual analysis.
 
 LINK DEFINITION:
 - A "link" represents a rigid body in the kinematic chain
-- Create links ONLY for: (1) the BASE (stationary), and (2) MOVING COMPONENTS
+- Create links ONLY for: (1) the BASE (stationary), and (2) MOVING COMPONENTS identified in visual analysis
 - Objects that move together as one unit belong to the SAME link
 - Links are connected by joints (revolute, prismatic, fixed, etc.)
 
 {vision_context}
 
-LINKING STRATEGY:
-1. Identify the BASE: Create ONE base_link containing all stationary/fixed components
-2. Identify MOVING PARTS: Create ONE link for each independently moving component or assembly
-3. Group rigidly: Components that move together (no relative motion) belong to the SAME link
-4. Focus on function: Links represent functional moving parts, not individual CAD components
+⚠️  CRITICAL WORKFLOW:
+1. READ the visual analysis - it tells you EXACTLY how many links and what type
+2. If visual analysis says "is_static_object": true → Create ONLY base_link, assign ALL objects to it
+3. If visual analysis specifies N moving links → Create exactly N moving links + base_link
+4. DO NOT create additional links beyond what visual analysis specifies
+5. Your job is MAPPING objects to the pre-determined link structure, NOT redesigning it
 
-ANALYSIS PRIORITY (in order):
-1. Visual Structure & Position: Use the visual analysis to identify what moves independently
-2. Spatial Clusters: Objects in the same spatial cluster are physically close and likely part of the same assembly
-3. Geometric Features: Use shape analysis to identify functional components:
-   - CYLINDRICAL objects → likely wheels, hubs, or axles (separate moving links)
-   - ELONGATED objects → likely rails, beams, or fork tines (group by function)
-   - FLAT/BOX objects → likely chassis, body, or structural base (typically base_link)
-4. Symmetry Pairs: Left/right symmetric objects (e.g., wheels) should be separate links
-5. Domain Knowledge: Apply robotics/mechanical engineering principles about kinematic chains
-6. Hierarchy & Constraints: Parent-child relationships indicate kinematic connections
-7. Object Names: Use as LAST RESORT - do NOT group by sequential numbering!
+LINKING STRATEGY (Object Mapping):
+1. BASE LINK: Assign ALL objects that are NOT part of moving components identified in visual analysis
+   → Includes: structural parts, decorative elements, mounting brackets, housings, frames
+   → Rule: "When in doubt, put it in base_link"
 
-CRITICAL: DO NOT assign objects to links based on sequential object names (e.g., Forklift_b.001-015).
-Instead, use SPATIAL CLUSTERS, GEOMETRIC FEATURES, and SYMMETRY PAIRS to intelligently categorize.
+2. MOVING LINKS: For each moving link specified in visual analysis:
+   → Find objects matching the "components_description" from visual analysis
+   → Use SPATIAL CLUSTERS to identify which objects are physically part of that moving assembly
+   → Use GEOMETRIC FEATURES to confirm object function (cylindrical = wheel, etc.)
+
+3. EMPTY OBJECT HANDLING:
+   → Empty objects are organizational only - DO NOT assign them to links
+   → Instead, assign their CHILDREN to appropriate links based on visual analysis
+   → Traverse object hierarchy to find actual mesh objects
+
+ANALYSIS PRIORITY (strict order):
+1. ⭐ VISUAL ANALYSIS - Determines link count and structure (HIGHEST PRIORITY)
+2. 📦 SPATIAL CLUSTERS - Maps objects to links based on proximity
+3. 🔷 GEOMETRIC FEATURES - Confirms functional assignment (wheels, rails, chassis)
+4. ⚖️  SYMMETRY PAIRS - Helps identify left/right components
+5. 🌳 HIERARCHY - Navigate Empty parents to find mesh children
+6. 📝 OBJECT NAMES - LAST RESORT, do NOT rely on sequential numbering
+
+⛔ OVER-SEGMENTATION PREVENTION:
+- If visual analysis says "total_degrees_of_freedom": 0 → Create ONLY base_link
+- If visual analysis says "total_degrees_of_freedom": 2 → Create base_link + 2 moving links (NOT 10+)
+- DO NOT create separate links for:
+  → Structural/decorative parts
+  → Parts that are visually merged with base
+  → Small connectors, bolts, brackets
+  → Fork structures (unless they move - usually in base_link)
+- When uncertain if something should be its own link → PUT IT IN BASE_LINK
 
 SCENE DATA:
 {formatted_data}
 
 TASK:
-Create a minimal, functional link structure. Most mechanisms need only 2-4 links total.
+Map scene objects to the link structure defined in the visual analysis above.
+DO NOT create additional links beyond what visual analysis specifies.
 
-HOW TO USE SPATIAL AND GEOMETRIC DATA:
-1. Start with SPATIAL CLUSTERS - objects physically near each other likely form assemblies
-2. Use GEOMETRIC FEATURES to identify function:
-   - Group all CYLINDRICAL objects at similar positions → wheel assembly
-   - Group ELONGATED vertical objects → mast assembly
-   - Group large BOX/FLAT objects → chassis/base
-3. Use SYMMETRY PAIRS to separate left/right moving parts
-4. Cross-reference with VISUAL ANALYSIS for confirmation
+HOW TO USE SCENE DATA FOR OBJECT MAPPING:
+1. Read visual analysis → It specifies EXACTLY how many links (e.g., "total_degrees_of_freedom": 3 = base + 3 moving links)
+2. For each moving link in visual analysis:
+   a. Read "components_description" (e.g., "cylindrical wheel assembly on left rear")
+   b. Find matching objects in SPATIAL CLUSTERS (objects near each other)
+   c. Confirm with GEOMETRIC FEATURES (cylindrical shape = wheel)
+   d. Check SYMMETRY PAIRS (left/right identification)
+3. Assign ALL remaining objects to base_link (structural parts, frames, etc.)
 
-Example Process for a Forklift:
-- See CYLINDRICAL objects in Cluster 1 at left side → rear_left_wheel_link
-- See CYLINDRICAL objects in Cluster 2 at right side (symmetry pair) → rear_right_wheel_link
-- See ELONGATED vertical objects in Cluster 3 → mast_assembly_link
-- See large BOX objects spread across middle → chassis_link (base)
-- See small CYLINDRICAL objects in Cluster 4 at front → front_caster_link
+MAPPING EXAMPLE - 3-Jaw Chuck (from visual analysis):
+Visual analysis says: base_link + jaw_1_link + jaw_2_link + jaw_3_link (4 links, 3 DOF)
 
-General Examples:
-- Simple gripper: base_link (stationary body), gripper_link (moving fingers as one unit)
-- Robotic arm (2-joint): base_link, upper_arm_link, forearm_link
-- Wheeled robot: chassis_link (base), wheel_left_link, wheel_right_link
-- Articulated mechanism: base_link, rotating_platform_link, actuator_link
+Object Mapping Process:
+1. base_link ← Assign: "chuck_body", "housing", "mount_plate", all structural parts
+2. jaw_1_link ← Find: CYLINDRICAL objects in spatial cluster at 0° position matching "first jaw finger"
+3. jaw_2_link ← Find: CYLINDRICAL objects in spatial cluster at 120° position matching "second jaw finger"
+4. jaw_3_link ← Find: CYLINDRICAL objects in spatial cluster at 240° position matching "third jaw finger"
+
+MAPPING EXAMPLE - Static Clamp (from visual analysis):
+Visual analysis says: is_static_object = true, total_degrees_of_freedom = 0
+
+Object Mapping Process:
+1. base_link ← Assign ALL objects (clamp_body, grip_pad, mount, screw, etc.)
+2. NO other links created
+
+MAPPING EXAMPLE - Forklift (from visual analysis):
+Visual analysis says: base + rear_left_wheel + rear_right_wheel + mast_lift (4 links, 3 DOF)
+
+Object Mapping Process:
+1. base_link ← Assign: chassis, frame, front casters, fork mount, body panels, decorative parts
+2. rear_left_wheel_link ← Find: CYLINDRICAL objects in left-side spatial cluster
+3. rear_right_wheel_link ← Find: CYLINDRICAL objects in right-side spatial cluster (symmetry pair)
+4. mast_lift_link ← Find: ELONGATED vertical objects + fork assembly in mast cluster
 
 Respond ONLY with valid JSON in this exact format:
 {{
@@ -1477,12 +1630,12 @@ Respond ONLY with valid JSON in this exact format:
 }}
 
 CRITICAL RULES:
-- Create ONE link for the base (all stationary parts)
-- Create ONE link per independently moving component/assembly
-- Components with no relative motion between them = SAME link
-- Most mechanisms have 2-4 links total, not 10+
-- Every object should be assigned to exactly one link
-- Focus on MOVEMENT and FUNCTION, not component boundaries
+- Create EXACTLY the number of links specified in visual analysis (no more, no less)
+- If visual analysis says 0 DOF (static) → Create ONLY base_link
+- If visual analysis says 3 DOF → Create base_link + exactly 3 moving links
+- Assign ALL remaining/uncertain objects to base_link
+- Every object must be assigned to exactly one link
+- Focus on MAPPING objects to pre-determined structure, NOT redesigning it
 """
 
     return prompt
@@ -1531,7 +1684,7 @@ def analyze_scene_with_ai(scene_data, vision_analysis):
             for line in prompt.split('\n'):
                 logger.text_block.write(line + "\n")
 
-        # Make API call (without temperature parameter for model compatibility)
+        # Make API call with deterministic parameters
         if logger:
             logger.info("Sending request to Azure OpenAI...")
 
@@ -1546,7 +1699,10 @@ def analyze_scene_with_ai(scene_data, vision_analysis):
                     "role": "user",
                     "content": prompt
                 }
-            ]
+            ],
+            # Note: temperature parameter not supported by reasoning models (o1, o3-mini, etc.)
+            # Determinism maintained via seed parameter
+            seed=42
         )
 
         if logger:
@@ -1938,7 +2094,10 @@ Respond with JSON:
                             {"role": "system", "content": "You are an expert in robotics validation, SDF/URDF formats, and mechanical simulation."},
                             {"role": "user", "content": validation_prompt}
                         ],
-                        max_completion_tokens=16000
+                        max_completion_tokens=16000,
+                        # Note: temperature parameter not supported by reasoning models (o1, o3-mini, etc.)
+                        # Determinism maintained via seed parameter
+                        seed=42
                     )
 
                     validation_response = response.choices[0].message.content
@@ -2219,7 +2378,10 @@ CRITICAL:
                 {"role": "system", "content": "You are an expert in robotics and fixing link structure issues."},
                 {"role": "user", "content": fix_prompt}
             ],
-            max_completion_tokens=16000
+            max_completion_tokens=16000,
+            # Note: temperature parameter not supported by reasoning models (o1, o3-mini, etc.)
+            # Determinism maintained via seed parameter
+            seed=42
         )
 
         fix_response = response.choices[0].message.content
@@ -2430,65 +2592,6 @@ def cleanup_existing_autolinks():
     return removed_count
 
 
-def join_objects_in_collection(collection, link_name, logger=None):
-    """
-    Join all mesh objects within a collection into a single mesh.
-    This combines parts that move together as one rigid body.
-
-    Args:
-        collection: The Blender collection containing objects to join
-        link_name: Name of the link (for naming the joined object)
-        logger: Optional logger for progress reporting
-
-    Returns:
-        bool: True if objects were joined, False otherwise
-    """
-    import bpy
-
-    # Get all mesh objects in the collection
-    mesh_objects = [obj for obj in collection.objects if obj.type == 'MESH']
-
-    # Need at least 2 objects to join
-    if len(mesh_objects) < 2:
-        if logger and len(mesh_objects) == 1:
-            logger.info(f"    Only 1 object in '{link_name}', no joining needed")
-        return False
-
-    try:
-        if logger:
-            logger.info(f"    Joining {len(mesh_objects)} objects into one mesh...")
-
-        # Deselect all
-        bpy.ops.object.select_all(action='DESELECT')
-
-        # Select all mesh objects in this collection
-        for obj in mesh_objects:
-            obj.select_set(True)
-
-        # Set the first object as active (this will be the base for joining)
-        bpy.context.view_layer.objects.active = mesh_objects[0]
-
-        # Join all selected objects
-        bpy.ops.object.join()
-
-        # Rename the joined object
-        joined_obj = bpy.context.view_layer.objects.active
-        joined_obj.name = f"{link_name}_mesh"
-
-        if logger:
-            logger.info(f"    ✓ Joined into '{joined_obj.name}'")
-
-        # Deselect
-        bpy.ops.object.select_all(action='DESELECT')
-
-        return True
-
-    except Exception as e:
-        if logger:
-            logger.warning(f"    ⚠️  Failed to join objects: {str(e)}")
-        return False
-
-
 def create_links_from_ai_suggestion(ai_result):
     """
     Automatically create link collections based on AI suggestions.
@@ -2572,15 +2675,7 @@ def create_links_from_ai_suggestion(ai_result):
                         if logger:
                             logger.warning(f"    Object '{obj_name}' not found")
 
-                # Optional: Join objects within the same link into one mesh
-                # This combines parts that move together as one rigid body
-                joined = join_objects_in_collection(visual_collection, link_name, logger)
-
-                if joined:
-                    links_created.append(f"{link_name} (joined {objects_moved} parts)")
-                else:
-                    links_created.append(f"{link_name} ({objects_moved} objects)")
-
+                links_created.append(f"{link_name} ({objects_moved} objects)")
                 if logger:
                     logger.info(f"  Successfully created link '{link_name}' with {objects_moved} objects")
 
@@ -2622,72 +2717,169 @@ def create_links_from_ai_suggestion(ai_result):
 
 
 class SDFG_OT_SeparateMergedObjects(bpy.types.Operator):
-    """Separate merged objects by loose parts"""
+    """Smart separate and regroup based on proximity"""
 
     bl_idname = "scene.separate_merged_objects"
-    bl_label = "Separate Merged Objects"
-    bl_description = "Automatically separate objects that contain multiple disconnected parts (Separate by Loose Parts)"
+    bl_label = "Smart Separate & Group"
+    bl_description = "Separate loose parts, then intelligently regroup nearby components based on spatial proximity"
     bl_options = {"REGISTER", "UNDO"}
 
-    def execute(self, context):
-        separated_count = 0
-        total_parts = 0
-        objects_to_process = []
+    proximity_threshold: bpy.props.FloatProperty(
+        name="Proximity Threshold",
+        description="Maximum distance between parts to group them together (in meters)",
+        default=0.1,
+        min=0.01,
+        max=1.0
+    ) # type: ignore
 
-        # Collect all mesh objects
-        for obj in bpy.context.scene.objects:
-            if obj.type == 'MESH' and len(obj.data.vertices) > 0:
-                objects_to_process.append(obj)
+    def invoke(self, context, event):
+        return context.window_manager.invoke_props_dialog(self)
+
+    def draw(self, context):
+        layout = self.layout
+        layout.prop(self, "proximity_threshold")
+        layout.label(text="Parts closer than this will be grouped together")
+
+    def execute(self, context):
+        from mathutils import Vector
+        import numpy as np
+
+        print("\n" + "="*60)
+        print("SMART SEPARATE & GROUP")
+        print("="*60)
+
+        # Step 1: Separate all loose parts
+        print("\nStep 1: Separating loose parts...")
+        objects_to_process = [obj for obj in bpy.context.scene.objects
+                             if obj.type == 'MESH' and len(obj.data.vertices) > 0]
 
         if not objects_to_process:
             self.report({'INFO'}, "No mesh objects found")
             return {'CANCELLED'}
 
-        self.report({'INFO'}, f"Analyzing {len(objects_to_process)} mesh objects...")
-
-        # Process each object
+        all_parts = []
         for obj in objects_to_process:
-            # Select only this object
             bpy.ops.object.select_all(action='DESELECT')
             obj.select_set(True)
             bpy.context.view_layer.objects.active = obj
 
-            # Count initial number of objects
-            initial_count = len(bpy.context.scene.objects)
-
-            # Switch to edit mode and separate by loose parts
             try:
                 bpy.ops.object.mode_set(mode='EDIT')
                 bpy.ops.mesh.select_all(action='SELECT')
                 bpy.ops.mesh.separate(type='LOOSE')
                 bpy.ops.object.mode_set(mode='OBJECT')
-
-                # Count how many new objects were created
-                final_count = len(bpy.context.scene.objects)
-                new_parts = final_count - initial_count
-
-                if new_parts > 0:
-                    separated_count += 1
-                    total_parts += new_parts
-                    print(f"Separated '{obj.name}' into {new_parts + 1} parts")
-
-            except Exception as e:
-                print(f"Could not separate '{obj.name}': {str(e)}")
-                # Make sure we're back in object mode
+            except:
                 try:
                     bpy.ops.object.mode_set(mode='OBJECT')
                 except:
                     pass
 
+        # Get all mesh objects after separation
+        all_parts = [obj for obj in bpy.context.scene.objects
+                    if obj.type == 'MESH' and len(obj.data.vertices) > 0]
+
+        print(f"  Found {len(all_parts)} parts after separation")
+
+        if len(all_parts) <= 1:
+            self.report({'INFO'}, "No parts to group")
+            return {'FINISHED'}
+
+        # Step 2: Calculate centers for all parts
+        print("\nStep 2: Calculating part centers...")
+        part_centers = {}
+        for obj in all_parts:
+            center = obj.matrix_world.translation.copy()
+            part_centers[obj] = center
+
+        # Step 3: Group nearby parts using proximity clustering
+        print(f"\nStep 3: Grouping parts within {self.proximity_threshold}m...")
+        groups = self.cluster_by_proximity(part_centers, self.proximity_threshold)
+
+        print(f"  Created {len(groups)} groups")
+
+        # Step 4: Join parts within each group
+        print("\nStep 4: Joining grouped parts...")
+        joined_count = 0
+        for group_id, parts in groups.items():
+            if len(parts) > 1:
+                # Join this group
+                bpy.ops.object.select_all(action='DESELECT')
+                for obj in parts:
+                    obj.select_set(True)
+
+                bpy.context.view_layer.objects.active = parts[0]
+
+                try:
+                    bpy.ops.object.join()
+                    # Rename joined object
+                    joined_obj = bpy.context.view_layer.objects.active
+                    joined_obj.name = f"grouped_part_{group_id:03d}"
+                    joined_count += 1
+                    print(f"  Joined group {group_id}: {len(parts)} parts → {joined_obj.name}")
+                except Exception as e:
+                    print(f"  Failed to join group {group_id}: {e}")
+
         # Deselect all
         bpy.ops.object.select_all(action='DESELECT')
 
-        if separated_count > 0:
-            self.report({'INFO'}, f"Separated {separated_count} objects into {total_parts} additional parts")
-        else:
-            self.report({'INFO'}, "No merged objects found - all objects are already separate")
+        print("\n" + "="*60)
+        print(f"RESULT: Created {len(groups)} groups, joined {joined_count} multi-part groups")
+        print("="*60 + "\n")
 
+        self.report({'INFO'}, f"Grouped into {len(groups)} parts ({joined_count} groups joined)")
         return {'FINISHED'}
+
+    def cluster_by_proximity(self, part_centers, threshold):
+        """
+        Cluster parts based on spatial proximity using simple nearest-neighbor grouping.
+
+        Args:
+            part_centers: Dict of {object: center_location}
+            threshold: Maximum distance to group parts together
+
+        Returns:
+            Dict of {group_id: [objects]}
+        """
+        from mathutils import Vector
+
+        unassigned = set(part_centers.keys())
+        groups = {}
+        group_id = 0
+
+        while unassigned:
+            # Start new group with any unassigned part
+            seed = unassigned.pop()
+            current_group = [seed]
+            seed_center = part_centers[seed]
+
+            # Find all parts within threshold distance
+            changed = True
+            while changed:
+                changed = False
+                to_remove = []
+
+                for obj in unassigned:
+                    obj_center = part_centers[obj]
+
+                    # Check distance to any part in current group
+                    for group_obj in current_group:
+                        group_center = part_centers[group_obj]
+                        distance = (obj_center - group_center).length
+
+                        if distance <= threshold:
+                            current_group.append(obj)
+                            to_remove.append(obj)
+                            changed = True
+                            break
+
+                # Remove assigned parts
+                for obj in to_remove:
+                    unassigned.remove(obj)
+
+            groups[group_id] = current_group
+            group_id += 1
+
+        return groups
 
 
 class SDFG_OT_AutoGenerateLinks(bpy.types.Operator):
