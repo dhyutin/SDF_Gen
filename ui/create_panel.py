@@ -16,7 +16,7 @@ class SDFG_PT_CreateTabs(bpy.types.Panel):
     bl_idname = "SDFG_PT_CreatePanel"
     bl_space_type = "VIEW_3D"
     bl_region_type = "UI"
-    bl_category = "SDF_Gen"
+    bl_category = "SDF_Gen_updated_collider"
 
     
 
@@ -113,6 +113,24 @@ class SDFG_PT_CreateTabs(bpy.types.Panel):
             col.operator("mesh.add_collider", text="Cone").shape_type = "Cone"
             col.operator("mesh.add_collider", text="Plane").shape_type = "Plane"
             col.operator("mesh.add_collider", text="Mesh Collider").shape_type = "Mesh"
+
+            col.label(text="Auto colliders:")
+            col.operator("mesh.magic_collider", text="Magic")
+
+            # Display Magic Collider results
+            if len(context.scene.magic_collider_results) > 0:
+                box = layout.box()
+                box.label(text="Assigned Colliders:", icon="INFO")
+                for result in context.scene.magic_collider_results:
+                    row = box.row()
+                    # Display object name
+                    row.label(text=result.object_name, icon="OBJECT_DATA")
+                    # Display collider type with axis if applicable
+                    if result.collider_axis:
+                        collider_text = f"{result.collider_type} ({result.collider_axis}-axis)"
+                    else:
+                        collider_text = result.collider_type
+                    row.label(text=collider_text)
 
             col = split.column()
             
