@@ -1645,12 +1645,12 @@ AVOID UNLESS ABSOLUTELY NECESSARY:
 - Plane: Only for extremely flat surfaces (rarely needed)
 
 DECISION CRITERIA:
-SINGLE collider → Simple, uniform shapes:
+SINGLE collider -> Simple, uniform shapes:
   - Box: Rectangular robot links, gripper bodies, vehicle chassis, brackets
   - Cylinder: Cylindrical shafts, wheels, tubes, cylindrical robot links
   - Small components (screws, nuts, bolts, washers, pins, rivets)
 
-MULTIPLE colliders → Complex non-uniform shapes:
+MULTIPLE colliders -> Complex non-uniform shapes:
   - Robot arms with varying cross-sections
   - Grippers with distinct body and finger sections
   - L-shapes, T-shapes, H-beams
@@ -2321,7 +2321,7 @@ IMPORTANT:
                 model=config['deployment_name'],
                 messages=[{"role": "user", "content": message_content}],
                 temperature=1,
-                max_completion_tokens=500,
+                max_completion_tokens=1000,
             )
 
             llm_response = response.choices[0].message.content
