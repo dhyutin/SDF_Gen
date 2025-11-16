@@ -104,6 +104,7 @@ def update_viewport_to_camera():
     """
     Update the 3D viewport to show the current camera view.
     This provides visual feedback to the user about what angle is being captured.
+    OPTIMIZED: Reduced sleep time from 0.3s to 0.05s to speed up capture (6 images = 1.5s saved)
     """
     import time
 
@@ -123,8 +124,8 @@ def update_viewport_to_camera():
                     # Process events to show the update immediately
                     bpy.ops.wm.redraw_timer(type='DRAW_WIN_SWAP', iterations=1)
 
-                    # Brief pause so user can see the angle (0.3 seconds)
-                    time.sleep(0.3)
+                    # Brief pause so user can see the angle (OPTIMIZED: 0.05s instead of 0.3s)
+                    time.sleep(0.05)
                     return
     except Exception as e:
         # Non-critical - if viewport update fails, continue anyway
@@ -304,12 +305,12 @@ def capture_viewport_images():
         bpy.context.scene.collection.objects.link(temp_camera)
         bpy.context.scene.camera = temp_camera
 
-        # Set render settings for capture - REDUCED RESOLUTION to save tokens
-        bpy.context.scene.render.resolution_x = 512  # Reduced from 1024
-        bpy.context.scene.render.resolution_y = 512  # Reduced from 1024
+        # Set render settings for capture - OPTIMIZED RESOLUTION to save tokens and time
+        bpy.context.scene.render.resolution_x = 384  # Reduced from 512 (was 1024 originally)
+        bpy.context.scene.render.resolution_y = 384  # Reduced from 512 (was 1024 originally)
         bpy.context.scene.render.image_settings.file_format = 'PNG'
 
-        # Define fixed comprehensive angles
+        # Define fixed comprehensive angles - OPTIMIZED: Reduced to 6 essential views
         # Format: (name, azimuth, elevation)
         # Azimuth: 0=front, 90=right, 180=back, 270=left
         # Elevation: 0=level, positive=above, negative=below
@@ -320,10 +321,11 @@ def capture_viewport_images():
             ("left", 270, 0),          # Left side view
             ("top", 0, 90),            # Top view (looking down)
             ("bottom", 0, -90),        # Bottom view (looking up)
-            ("front_top", 45, 30),     # Diagonal: front-top
-            ("right_top", 135, 30),    # Diagonal: right-top
-            ("back_top", 225, 30),     # Diagonal: back-top
-            ("left_top", 315, 30),     # Diagonal: left-top
+            # REMOVED diagonal views to reduce token usage and processing time
+            # ("front_top", 45, 30),     # Diagonal: front-top
+            # ("right_top", 135, 30),    # Diagonal: right-top
+            # ("back_top", 225, 30),     # Diagonal: back-top
+            # ("left_top", 315, 30),     # Diagonal: left-top
         ]
 
         if logger:
@@ -378,7 +380,7 @@ def capture_viewport_images():
                 continue
 
         if logger:
-            logger.info(f"Successfully captured {len(image_paths)} images at 512x512 resolution")
+            logger.info(f"Successfully captured {len(image_paths)} images at 384x384 resolution (optimized)")
 
         return image_paths
 
@@ -522,7 +524,7 @@ def load_images_in_blender(image_paths):
             logger.warning(f"Failed to load images in Blender: {str(e)}")
 
 
-def analyze_images_with_ai(image_paths, cleanup_images=True, show_preview=True):
+def analyze_images_with_ai(image_paths, cleanup_images=True, show_preview=False):
     """
     Analyze captured viewport images using Azure OpenAI vision capabilities.
 
@@ -556,13 +558,12 @@ def analyze_images_with_ai(image_paths, cleanup_images=True, show_preview=True):
                 logger.error("Azure OpenAI not configured")
             return False, "Azure OpenAI not configured", 0
 
-        # Resize and encode images to base64 with size limits
+        # Encode images to base64 (OPTIMIZED: Skip resize since we capture at 384x384 already)
         if logger:
-            logger.info("Resizing images to reduce token usage...")
+            logger.info("Encoding images for AI analysis...")
 
         encoded_images = []
-        resized_paths = []
-        TARGET_SIZE = (384, 384)  # Further reduced to 384x384 to save tokens
+        resized_paths = []  # Keep for cleanup compatibility
 
         for idx, img_path in enumerate(image_paths):
             try:
@@ -572,23 +573,16 @@ def analyze_images_with_ai(image_paths, cleanup_images=True, show_preview=True):
                         logger.warning(f"  Image not found: {img_path}")
                     continue
 
-                original_size_mb = os.path.getsize(img_path) / (1024 * 1024)
+                image_size_mb = os.path.getsize(img_path) / (1024 * 1024)
 
-                # Resize image to reduce tokens (only show warning for first image)
-                resized_path = resize_image_for_ai(img_path, TARGET_SIZE, show_warning=(idx == 0))
-                resized_paths.append(resized_path)
-
-                resized_size_mb = os.path.getsize(resized_path) / (1024 * 1024)
-
-                # Encode resized image
-                with open(resized_path, "rb") as img_file:
+                # OPTIMIZED: Direct encode without resize (already 384x384 from capture)
+                with open(img_path, "rb") as img_file:
                     image_data = img_file.read()
                     encoded_image = base64.b64encode(image_data).decode('utf-8')
                     encoded_images.append(encoded_image)
 
                     if logger:
-                        logger.info(f"  Resized & encoded: {os.path.basename(img_path)}")
-                        logger.info(f"    Original: {original_size_mb:.2f}MB → Resized: {resized_size_mb:.2f}MB ({resized_size_mb/original_size_mb*100:.1f}% of original)")
+                        logger.info(f"  Encoded: {os.path.basename(img_path)} ({image_size_mb:.2f}MB)")
 
             except Exception as e:
                 if logger:
@@ -2408,7 +2402,7 @@ CRITICAL:
         return False, f"Failed to get fixes: {str(e)}"
 
 
-def iterative_validation_and_fix(initial_result, scene_data, vision_analysis, max_iterations=2):
+def iterative_validation_and_fix(initial_result, scene_data, vision_analysis, max_iterations=1):
     """
     Iteratively validate and fix link structure until validation passes or max iterations reached.
     Builds iteration history to help AI learn from previous attempts.
@@ -3068,7 +3062,7 @@ class SDFG_OT_AutoGenerateLinks(bpy.types.Operator):
         self.report({'INFO'}, "Running iterative validation and fixing...")
 
         final_result, validation_report, iterations_used = iterative_validation_and_fix(
-            result, scene_data, vision_analysis, max_iterations=2
+            result, scene_data, vision_analysis, max_iterations=1
         )
 
         logger.info("")
