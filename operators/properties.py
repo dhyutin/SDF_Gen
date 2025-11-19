@@ -205,6 +205,8 @@ def update_move_joints(self, context):
     def bone_to_pose(context):
         # bpy.ops.object.mode_set(mode='EDIT')
         armature = context.object
+        if armature is None or not hasattr(armature, 'pose'):
+            return
         for pose_bone in armature.pose.bones:
             bpy.ops.pose.armature_apply(selected=False)
 

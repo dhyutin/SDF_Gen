@@ -40,6 +40,38 @@ def register():
     bpy.types.Scene.magic_collider_results = bpy.props.CollectionProperty(type=MagicColliderResult)
     # bpy.types.Scene.utilties_advanced = bpy.props.BoolProperty(name="Utilities Advanced", default=False)
 
+    # LLM settings for Magic Collider (Azure OpenAI)
+    bpy.types.Scene.use_llm_collider = bpy.props.BoolProperty(
+        name="Use LLM",
+        description="Use Large Language Model for intelligent collider selection (configure in .env file)",
+        default=False
+    )
+
+    # Performance settings for Magic Collider
+    bpy.types.Scene.max_refinement_iterations = bpy.props.IntProperty(
+        name="Max Refinement Iterations",
+        description="Maximum number of refinement iterations for complex objects (0=skip, 1=balanced, 3=high quality)",
+        default=2,
+        min=0,
+        max=3
+    )
+
+    bpy.types.Scene.simple_object_volume_threshold = bpy.props.FloatProperty(
+        name="Simple Object Volume Threshold",
+        description="Objects with volume below this threshold skip refinement (smaller = faster)",
+        default=0.001,
+        min=0.0,
+        max=1.0
+    )
+
+    bpy.types.Scene.simple_object_size_threshold = bpy.props.FloatProperty(
+        name="Simple Object Size Threshold",
+        description="Objects with max dimension below this threshold skip refinement (smaller = faster)",
+        default=0.05,
+        min=0.0,
+        max=1.0
+    )
+
 
 def unregister():
     # bpy.utils.unregister_class(JointObjectProperties)
@@ -50,6 +82,12 @@ def unregister():
     del bpy.types.Collection.link_grp
     del bpy.types.Scene.magic_collider_results
     # del bpy.types.Scene.utilties_advanced
+
+    # Delete LLM settings
+    del bpy.types.Scene.use_llm_collider
+    del bpy.types.Scene.max_refinement_iterations
+    del bpy.types.Scene.simple_object_volume_threshold
+    del bpy.types.Scene.simple_object_size_threshold
 
 
 if __name__ == "__main__":
