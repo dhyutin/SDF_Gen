@@ -55,7 +55,7 @@ def load_llm_config():
         'api_key': os.environ.get('AZURE_OPENAI_API_KEY', ''),
         'azure_endpoint': os.environ.get('AZURE_OPENAI_ENDPOINT', ''),
         'api_version': os.environ.get('AZURE_OPENAI_API_VERSION', '2024-08-01-preview'),
-        'deployment_name': os.environ.get('AZURE_OPENAI_DEPLOYMENT_NAME', 'gpt-4o'),
+        'deployment_name': os.environ.get('AZURE_OPENAI_DEPLOYMENT_NAME', 'gpt-5-mini'),
     }
     return config
 
@@ -1715,7 +1715,7 @@ Return ONLY JSON."""
                     }
                 ],
                 temperature=1,
-                max_completion_tokens=500,
+                max_completion_tokens=1500,
             )
 
             llm_response = response.choices[0].message.content
@@ -1907,7 +1907,7 @@ Return ONLY JSON."""
                     }
                 ],
                 temperature=1,
-                max_completion_tokens=1500,
+                max_completion_tokens=2000,
             )
 
             llm_response = response.choices[0].message.content
@@ -2321,7 +2321,7 @@ IMPORTANT:
                 model=config['deployment_name'],
                 messages=[{"role": "user", "content": message_content}],
                 temperature=1,
-                max_completion_tokens=1000,
+                max_completion_tokens=1500,
             )
 
             llm_response = response.choices[0].message.content
@@ -2529,7 +2529,7 @@ IMPORTANT:
                 model=config['deployment_name'],
                 messages=[{"role": "user", "content": message_content}],
                 temperature=1,
-                max_completion_tokens=1000,
+                max_completion_tokens=1500,
             )
 
             llm_response = response.choices[0].message.content
